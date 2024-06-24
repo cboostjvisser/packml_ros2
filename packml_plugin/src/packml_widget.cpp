@@ -22,10 +22,6 @@
 #include <memory>
 #include <string>
 #include "packml_plugin/packml_widget.hpp"
-#include "rclcpp/rclcpp.hpp"
-#include "packml_msgs/srv/transition.hpp"  // Datatypes for services
-#include "packml_msgs/srv/all_status.hpp"
-
 PackmlWidget::PackmlWidget(QWidget * parent)
 : QWidget(parent)
 {
@@ -55,7 +51,7 @@ void PackmlWidget::timerEvent(QTimerEvent * /*event*/)  // NOLINT(readability/ca
   auto result_future = status_client_->async_send_request(update);
   if (rclcpp::spin_until_future_complete(
       nh_,
-      result_future, std::chrono::milliseconds(100)) != rclcpp::executor::FutureReturnCode::SUCCESS)
+      result_future, std::chrono::milliseconds(100)) != rclcpp::FutureReturnCode::SUCCESS)
   {
     printf("Error in service call, check that the ROS node or PLC driver are up and running\n");
   } else {
