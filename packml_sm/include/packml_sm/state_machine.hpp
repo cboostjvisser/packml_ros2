@@ -21,14 +21,44 @@
 
 #include <functional>
 #include <memory>
+#include <qcoreevent.h>
+#include <qstatemachine.h>
 #include "QEvent"
 #include "QAbstractTransition"
-#include "packml_sm/state.hpp"
-#include "packml_sm/transitions.hpp"
-#include "rclcpp/rclcpp.hpp"
+// #include "packml_sm/events.hpp"
+#include <iostream>
+
+#include "packml_sm/states/toplevel_states.hpp"
+
+#include "packml_sm/states/acting_state.hpp"
+#include "packml_sm/states/wait_state.hpp"
+
+#include "packml_sm/events/cmd_event.hpp"
+#include "packml_sm/states_generator.hpp"
+// #include "packml_sm/transitions.hpp"
+// #include "rclcpp/rclcpp.hpp"
 
 namespace packml_sm
 {
+
+  class PackmlStateMachine : public QStateMachine
+  {
+    void endSelectTransitions(QEvent *event) override
+    {
+      if (event->type() == PACKML_CMD_EVENT_TYPE)
+      {
+        std::cout << "We are here! Event: " << event->type() << std::endl;
+        if (event->isAccepted())
+        {
+          std::cout << "We have accepted the event!" << std::endl;
+        }
+        else
+        {
+          std::cout << "Event has not been accepted!" << std::endl;
+        }
+      }
+    }
+  };
 
 
 /**
@@ -135,7 +165,6 @@ protected:
   */
   virtual void _clear() = 0;
 
-
   /**
   * @brief Function that binds a QT action to the function for the state reset
   */
@@ -193,6 +222,8 @@ void init(int argc, char * argv[]);
 class StateMachine : public QObject, public StateMachineInterface
 {
   Q_OBJECT
+
+
 
 public:
   /**
@@ -262,6 +293,7 @@ protected:
   */
   StateMachine();
 
+  StatesGenerator gen;
 
   /**
   * @brief Function that binds a QT action to the function for the state start
@@ -332,13 +364,13 @@ protected:
   /**
   * @brief Waiting for event to transition to abort state
   */
-  WaitState * abortable_;
+  PackmlSuperState * abortable_;
 
 
   /**
   * @brief Waiting for event to transition to stop state
   */
-  WaitState * stoppable_;
+  PackmlSuperState * stoppable_;
 
 
   /**
@@ -445,7 +477,7 @@ protected:
   /**
   * @brief QT state machine object
   */
-  QStateMachine sm_internal_;
+  PackmlStateMachine sm_internal_;
 
 protected slots:
   /**

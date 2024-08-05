@@ -6,9 +6,13 @@
 # Due to changes in the standard some states weren't enumerated.  I've made my best guess
 # below
 
+# Jacob Visser: Changed to match packml definition found in;
+# Chapter 9 'PACKML INTERFACE STATE DEFINITION' from 'PackML Unit/Machine Implementation Guide Part 1' Ver. 1.00
+# Downloaded on 25/07/2024 from: https://www.omac.org/packaging-workgroup-solutions
+
 # Values defined in tag naming guidelines
 int8 UNDEFINED = 0
-int8 OFF = 1            # Deleted in V3.0 of packml
+int8 CLEARING = 1
 int8 STOPPED = 2
 int8 STARTING = 3
 int8 IDLE = 4
@@ -19,14 +23,12 @@ int8 ABORTING = 8
 int8 ABORTED = 9
 int8 HOLDING = 10
 int8 HELD = 11
+int8 UNHOLDING = 12
+int8 SUSPENDING = 13
+int8 UNSUSPENDING = 14
+int8 RESETTING = 15
+int8 COMPLETING = 16
+int8 COMPLETE = 17
 
-# Values NOT defined in tag naming guidelines
-int8 RESETTING = 100
-int8 SUSPENDING = 101    # Not enumerated in tag guidelines
-int8 UNSUSPENDING = 102
-int8 CLEARING = 103
-int8 UNHOLDING = 104
-int8 COMPLETING = 105
-int8 COMPLETE = 106
-
+# msg values
 int8 val

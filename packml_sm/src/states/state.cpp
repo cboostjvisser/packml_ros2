@@ -17,10 +17,8 @@
 
 #include <iostream>
 #include <chrono>
-#include <thread>
-#include <functional>
-#include "packml_sm/state.hpp"
-#include "packml_sm/events.hpp"
+
+#include "packml_sm/states/state.hpp"
 
 namespace packml_sm
 {
@@ -42,47 +40,6 @@ void PackmlState::onExit(QEvent * /*e*/)  // NOLINT(readability/casting)
   cummulative_time_ = cummulative_time_ + (exit_time_ - enter_time_);
   std::cout << "Updating cummulative time, for state: " << name_.toUtf8().constData() << "(" <<
     state_ << ") to: " << cummulative_time_.count() << std::endl;
-}
-
-void ActingState::onEntry(QEvent * e)
-{
-  PackmlState::onEntry(e);
-  printf("Starting thread for state operation\n");
-  function_state_ = QtConcurrent::run(std::bind(&ActingState::operation, this));
-}
-
-void ActingState::onExit(QEvent * e)
-{
-  if (function_state_.isRunning()) {
-    printf(
-      "State exit triggered early, waiting for state operation to complete\n");
-  }
-  function_state_.waitForFinished();
-  PackmlState::onExit(e);
-}
-
-
-void ActingState::operation()
-{
-  QEvent * sc;
-  if (function_) {
-    printf("Executing operational function in acting state\n");
-    int error_code = function_();
-    if (0 == error_code) {
-      sc = new StateCompleteEvent();
-    } else {
-      std::cout << "Operational function returned error code: " << error_code <<
-        std::endl;
-      sc = new ErrorEvent(error_code);
-    }
-  } else {
-    std::cout << "Default operation, delaying " << delay_ms << " ms" <<
-      std::endl;
-    std::this_thread::sleep_for(std::chrono::seconds(static_cast<int>(delay_ms / 1000.0)));
-    printf("Operation delay complete\n");
-    sc = new StateCompleteEvent();
-  }
-  machine()->postEvent(sc);
 }
 
 }  // namespace packml_sm

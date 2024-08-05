@@ -5,10 +5,10 @@
 # http://sesam-world.com/_pdf/make2pack/mode/2010-11-29/Materiale/PackML_Tag_Naming_Guidelines_V2.0.pdf
 
 int8 UNDEFINED = 0
-int8 AUTOMATIC = 1
-int8 SEMI_AUTOMATIC = 2
+int8 PRODUCTION = 1
+int8 MAINTENANCE = 2
 int8 MANUAL = 3
-int8 IDLE = 4
-int8 SETUP = 11  # not defined in tag standard, but mentioned in state standard
+
+# int8 USER_DEFINED = 4 to ?
 
 int8 val

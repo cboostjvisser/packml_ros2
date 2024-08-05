@@ -13,23 +13,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#pragma once
 
-#ifndef PACKML_SM__TRANSITIONS_HPP_
-#define PACKML_SM__TRANSITIONS_HPP_
+#include <iostream>
 
-#include <QtGui>
 #include "QEvent"
 #include "QAbstractTransition"
+#include "packml_sm/states/state.hpp"
 #include "packml_sm/common.hpp"
-#include "packml_sm/state.hpp"
-#include "rclcpp/rclcpp.hpp"
 
+namespace packml_sm
+{
 
 /**
 * @brief Class that implements transitions between the states of a standard PackML state machine
 */
-namespace packml_sm
-{
 class CmdTransition : public QAbstractTransition
 {
 public:
@@ -40,7 +38,11 @@ public:
   */
   static CmdTransition * clear(PackmlState & from, PackmlState & to)
   {
-    return new CmdTransition(CmdEnum::CLEAR, "clear", from, to);
+    return new CmdTransition(TransitionCmd::CLEAR, "clear", from, to);
+  }
+  static CmdTransition * clear()
+  {
+    return new CmdTransition(TransitionCmd::CLEAR, "clear");
   }
 
 
@@ -51,7 +53,11 @@ public:
   */
   static CmdTransition * start(PackmlState & from, PackmlState & to)
   {
-    return new CmdTransition(CmdEnum::START, "start", from, to);
+    return new CmdTransition(TransitionCmd::START, "start", from, to);
+  }
+    static CmdTransition * start()
+  {
+    return new CmdTransition(TransitionCmd::START, "start");
   }
 
 
@@ -62,7 +68,11 @@ public:
   */
   static CmdTransition * stop(PackmlState & from, PackmlState & to)
   {
-    return new CmdTransition(CmdEnum::STOP, "stop", from, to);
+    return new CmdTransition(TransitionCmd::STOP, "stop", from, to);
+  }
+  static CmdTransition * stop()
+  {
+    return new CmdTransition(TransitionCmd::STOP, "stop");
   }
 
 
@@ -73,7 +83,11 @@ public:
   */
   static CmdTransition * hold(PackmlState & from, PackmlState & to)
   {
-    return new CmdTransition(CmdEnum::HOLD, "hold", from, to);
+    return new CmdTransition(TransitionCmd::HOLD, "hold", from, to);
+  }
+  static CmdTransition * hold()
+  {
+    return new CmdTransition(TransitionCmd::HOLD, "hold");
   }
 
 
@@ -84,8 +98,13 @@ public:
   */
   static CmdTransition * abort(PackmlState & from, PackmlState & to)
   {
-    return new CmdTransition(CmdEnum::ABORT, "abort", from, to);
+    return new CmdTransition(TransitionCmd::ABORT, "abort", from, to);
   }
+  static CmdTransition * abort()
+  {
+    return new CmdTransition(TransitionCmd::ABORT, "abort");
+  }
+
 
 
   /**
@@ -95,19 +114,22 @@ public:
   */
   static CmdTransition * reset(PackmlState & from, PackmlState & to)
   {
-    return new CmdTransition(CmdEnum::RESET, "reset", from, to);
+    return new CmdTransition(TransitionCmd::RESET, "reset", from, to);
   }
-
-
-  /**
-  * @brief Function to transition to the e stop state
-  * @param from - original state
-  * @param to - ending state
-  */
-  static CmdTransition * estop(PackmlState & from, PackmlState & to)
+  static CmdTransition * reset()
   {
-    return new CmdTransition(CmdEnum::ESTOP, "estop", from, to);
+    return new CmdTransition(TransitionCmd::RESET, "reset");
   }
+
+  // /**
+  // * @brief Function to transition to the e stop state
+  // * @param from - original state
+  // * @param to - ending state
+  // */
+  // static CmdTransition * estop(PackmlState & from, PackmlState & to)
+  // {
+  //   return new CmdTransition(TransitionCmd::ESTOP, "estop", from, to);
+  // }
 
 
   /**
@@ -117,7 +139,11 @@ public:
   */
   static CmdTransition * suspend(PackmlState & from, PackmlState & to)
   {
-    return new CmdTransition(CmdEnum::SUSPEND, "abort", from, to);
+    return new CmdTransition(TransitionCmd::SUSPEND, "suspend", from, to);
+  }
+  static CmdTransition * suspend()
+  {
+    return new CmdTransition(TransitionCmd::SUSPEND, "suspend");
   }
 
 
@@ -128,7 +154,11 @@ public:
   */
   static CmdTransition * unsuspend(PackmlState & from, PackmlState & to)
   {
-    return new CmdTransition(CmdEnum::UNSUSPEND, "unsuspend", from, to);
+    return new CmdTransition(TransitionCmd::UNSUSPEND, "unsuspend", from, to);
+  }
+  static CmdTransition * unsuspend()
+  {
+    return new CmdTransition(TransitionCmd::UNSUSPEND, "unsuspend");
   }
 
 
@@ -139,7 +169,11 @@ public:
   */
   static CmdTransition * unhold(PackmlState & from, PackmlState & to)
   {
-    return new CmdTransition(CmdEnum::UNHOLD, "unhold", from, to);
+    return new CmdTransition(TransitionCmd::UNHOLD, "unhold", from, to);
+  }
+  static CmdTransition * unhold()
+  {
+    return new CmdTransition(TransitionCmd::UNHOLD, "unhold");
   }
 
 
@@ -148,7 +182,7 @@ public:
   * @param cmd_value - number of the new requested state
   * @param name_value - name of the new requested state
   */
-  CmdTransition(const CmdEnum & cmd_value, const QString & name_value)
+  CmdTransition(const TransitionCmd & cmd_value, const QString & name_value)
   : cmd(cmd_value), name(name_value) {}
 
 
@@ -160,7 +194,7 @@ public:
   * @param to - ending state
   */
   CmdTransition(
-    const CmdEnum & cmd_value, const QString & name_value,
+    const TransitionCmd & cmd_value, const QString & name_value,
     PackmlState & from, PackmlState & to);
 
 protected:
@@ -181,7 +215,7 @@ protected:
   /**
   * @brief Number of the state
   */
-  CmdEnum cmd;
+  TransitionCmd cmd;
 
 
   /**
@@ -190,89 +224,4 @@ protected:
   QString name;
 };
 
-
-/**
-* @brief Class defining a transition that has been completed
-*/
-class StateCompleteTransition : public QAbstractTransition
-{
-public:
-  /**
-  * @brief Constructor of the class
-  */
-  StateCompleteTransition() {}
-
-
-  /**
-  * @brief Constructor of the class
-  * @param from - original state
-  * @param to - ending state
-  */
-  StateCompleteTransition(PackmlState & from, PackmlState & to);
-
-
-  /**
-  * @brief Destructor of the class
-  */
-  virtual ~StateCompleteTransition() {}
-
-protected:
-  /**
-  * @brief Function to check if the transition is valid
-  * @param e - triggering event
-  */
-  virtual bool eventTest(QEvent * e);
-
-
-  /**
-  * @brief Function to trigger an action when the transition is happening
-  * @param e - triggering event
-  */
-  virtual void onTransition(QEvent * e) {std::cout << e << std::endl;}
-
-private:
-};
-
-
-/**
-* @brief Class to define transitions that are not valid
-*/
-class ErrorTransition : public QAbstractTransition
-{
-public:
-  /**
-  * @brief Constructor of the class
-  */
-  ErrorTransition() {}
-
-
-  /**
-  * @brief Constructor of the class
-  * @param from - original state
-  * @param to - ending desired state
-  */
-  ErrorTransition(PackmlState & from, PackmlState & to);
-
-
-  /**
-  * @brief Destructor of the class
-  */
-  virtual ~ErrorTransition() {}
-
-protected:
-  /**
-  * @brief Function to check if the transition is valid
-  * @param e - triggering event
-  */
-  virtual bool eventTest(QEvent * e);
-
-
-  /**
-  * @brief Function to trigger an action when the transition is happening
-  * @param e - triggering event
-  */
-  virtual void onTransition(QEvent * e) {std::cout << e << std::endl;}
-};
-
-}  // namespace packml_sm
-#endif  // PACKML_SM__TRANSITIONS_HPP_
+} // namespace packml_sm

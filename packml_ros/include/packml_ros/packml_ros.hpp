@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <chrono>
+#include <packml_msgs/srv/detail/transition__struct.hpp>
 #include <thread>
 #include <sstream>
 #include "packml_sm/state_machine.hpp"
@@ -34,7 +35,7 @@
 */
 class SMNode
 {
-  int command_int = 0;
+  // int command_int = 0;
 
   /**
   * @brief State machine object
@@ -162,38 +163,38 @@ public:
         std::shared_ptr<packml_msgs::srv::Transition::Response> res) -> void {
         bool command_rtn = false;
         bool command_valid = true;
-        command_int = static_cast<int>(req->command);
+        auto command_int = static_cast<int>(req->command);
         std::stringstream ss;
         std::cout << "Evaluating transition request command: " << command_int << std::endl;
         switch (command_int) {
-          case 5:
+          case packml_msgs::srv::Transition::Request::ABORT /*5*/:
             command_rtn = sm->abort();
             break;
-          case 7:
+          case packml_msgs::srv::Transition::Request::STOP:
             command_rtn = sm->stop();
             break;
-          case 1:
+          case packml_msgs::srv::Transition::Request::CLEAR:
             command_rtn = sm->clear();
             break;
-          case 4:
+          case packml_msgs::srv::Transition::Request::HOLD:
             command_rtn = sm->hold();
             break;
-          case 6:
+          case packml_msgs::srv::Transition::Request::RESET:
             command_rtn = sm->reset();
             break;
-          case 2:
+          case packml_msgs::srv::Transition::Request::START:
             command_rtn = sm->start();
             break;
-          case 3:
-            command_rtn = sm->stop();
-            break;
-          case 100:
+          // case packml_msgs::srv::Transition::Request::STOP:
+          //   command_rtn = sm->stop();
+          //   break;
+          case packml_msgs::srv::Transition::Request::SUSPEND:
             command_rtn = sm->suspend();
             break;
-          case 102:
+          case packml_msgs::srv::Transition::Request::UNHOLD:
             command_rtn = sm->unhold();
             break;
-          case 101:
+          case packml_msgs::srv::Transition::Request::UNSUSPEND:
             command_rtn = sm->unsuspend();
             break;
           default:
@@ -359,7 +360,9 @@ public:
   static int myExecuteMethod()
   {
     printf("This is my execute method (begin)\n");
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    while (rclcpp::ok()) {
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
     printf("This is my execute method (end)\n");
     return 0;  // returning zero indicates non-failure
   }

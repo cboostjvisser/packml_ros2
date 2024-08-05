@@ -32,17 +32,38 @@ include_directories(
   include
 )
 
-qt5_wrap_cpp(packml_sm_MOCS include/packml_sm/state_machine.hpp
-  include/packml_sm/state.hpp
-  include/packml_sm/transitions.hpp
-  include/packml_sm/events.hpp
-  include/packml_sm/common.hpp)
+qt5_wrap_cpp(packml_sm_MOCS
+  include/packml_sm/state_machine.hpp
+
+  include/packml_sm/states/state.hpp
+  # include/packml_sm/states/toplevel_states.hpp
+  # include/packml_sm/states/wait_state.hpp
+  # include/packml_sm/states/acting_state.hpp
+
+  # include/packml_sm/transitions/cmd_transition.hpp
+  # include/packml_sm/transitions/sc_transition.hpp
+  # include/packml_sm/transitions/error_transition.hpp
+
+  # include/packml_sm/events/cmd_event.hpp
+  # include/packml_sm/events/sc_event.hpp
+  # include/packml_sm/events/error_event.hpp
+
+  # include/packml_sm/common.hpp
+  )
 
 #add libraries
 add_library(${PROJECT_NAME} SHARED
+  # src/states/toplevel_states.hpp
+  src/states/wait_state.cpp
+  src/states/acting_state.cpp
+  src/states/state.cpp
+
+  src/transitions/cmd_transition.cpp
+  src/transitions/sc_transition.cpp
+  src/transitions/error_transition.cpp
+
   src/state_machine.cpp
-  src/state.cpp
-  src/transitions.cpp
+
   ${packml_sm_MOCS})
 ament_target_dependencies(${PROJECT_NAME} rclcpp rqt_gui_cpp Qt5)
 

@@ -17,6 +17,10 @@
 #ifndef PACKML_SM__COMMON_HPP_
 #define PACKML_SM__COMMON_HPP_
 
+#include <ostream>
+#include <string>
+#include <type_traits>
+
 namespace packml_sm
 {
 
@@ -35,62 +39,125 @@ std::ostream & operator<<(
   return stream << static_cast<typename std::underlying_type<T>::type>(e);
 }
 
-enum class StatesEnum
-{
-  UNDEFINED = 0,
-  OFF = 1,
-  STOPPED = 2,
-  STARTING = 3,
-  IDLE = 4,
-  SUSPENDED = 5,
-  EXECUTE = 6,
-  STOPPING = 7,
-  ABORTING = 8,
-  ABORTED = 9,
-  HOLDING = 10,
-  HELD = 11,
-  RESETTING = 100,
-  SUSPENDING = 101,
-  UNSUSPENDING = 102,
-  CLEARING = 103,
-  UNHOLDING = 104,
-  COMPLETING = 105,
-  COMPLETE = 106,
 
-
+enum class SuperState {
   /* Super states that encapsulate multiple substates with a common transition
-  * Not explicitly used in the standard but helpful for consutrcting the state
+  * Not explicitly used in the standard but helpful for constructing the state
   * machine.
   */
 
-
-  ABORTABLE = 200,
-  STOPPABLE = 201
+  ABORTABLE = 0,
+  STOPPABLE = 1
 };
 
-enum class ModeEnum
+// Aligned with State.msg enum
+enum class State
 {
-  UNDEFINED = 0,
-  AUTOMATIC = 1,
-  SEMI_AUTOMATIC = 2,
-  MANUAL = 3,
-  IDLE = 4,
-  SETUP = 11
+  UNDEFINED   = 0,
+  CLEARING    = 1,
+  STOPPED     = 2,
+  STARTING    = 3,
+  IDLE        = 4,
+  SUSPENDED   = 5,
+  EXECUTE     = 6,
+  STOPPING    = 7,
+  ABORTING    = 8,
+  ABORTED     = 9,
+  HOLDING     = 10,
+  HELD        = 11,
+  UNHOLDING   = 12,
+  SUSPENDING  = 13,
+  UNSUSPENDING = 14,
+  RESETTING   = 15,
+  COMPLETING  = 16,
+  COMPLETE    = 17,
 };
 
-enum class CmdEnum
+inline std::string to_string(const State& state)
 {
-  UNDEFINED = 0,
-  CLEAR = 1,
-  START = 2,
-  STOP = 3,
-  HOLD = 4,
-  ABORT = 5,
-  RESET = 6,
-  ESTOP = 7,
-  SUSPEND = 100,
-  UNSUSPEND = 101,
-  UNHOLD = 102
+  switch (state)
+  {
+    case State::UNDEFINED:  return "UNDEFINED";
+    case State::CLEARING:   return "CLEARING";
+    case State::STOPPED:    return "STOPPED";
+    case State::STARTING:   return "STARTING";
+    case State::IDLE:       return "IDLE";
+    case State::SUSPENDED:  return "SUSPENDED";
+    case State::EXECUTE:    return "EXECUTE";
+    case State::STOPPING:   return "STOPPING";
+    case State::ABORTING:   return "ABORTING";
+    case State::ABORTED:    return "ABORTED";
+    case State::HOLDING:    return "HOLDING";
+    case State::HELD:       return "HELD";
+    case State::UNHOLDING:  return "UNHOLDING";
+    case State::SUSPENDING: return "SUSPENDING";
+    case State::UNSUSPENDING: return "UNSUSPENDING";
+    case State::RESETTING:  return "RESETTING";
+    case State::COMPLETING: return "COMPLETING";
+    case State::COMPLETE:   return "COMPLETE";
+  };
+  return std::to_string(static_cast<typename std::underlying_type<State>::type>(state));
+}
+
+inline std::ostream& operator<< (std::ostream& os, State state)
+{
+  return os << to_string(state);
+}
+
+// Aligned with Mode.msg
+enum class Mode
+{
+  UNDEFINED   = 0,
+  PRODUCTION  = 1,
+  MAINTENANCE = 2,
+  MANUAL      = 3
 };
+
+inline std::ostream& operator<< (std::ostream& os, Mode mode)
+{
+  switch (mode)
+  {
+  case Mode::UNDEFINED:   return os << "UNDEFINED";
+  case Mode::PRODUCTION:  return os << "PRODUCTION";
+  case Mode::MAINTENANCE: return os << "MAINTENANCE";
+  case Mode::MANUAL:      return os << "MANUAL";
+    break;
+  };
+  return os << static_cast<typename std::underlying_type<Mode>::type>(mode);
+}
+
+// Aligned with Transition.srv
+enum class TransitionCmd
+{
+  NO_COMMAND  = 0,
+  RESET       = 1,
+  START       = 2,
+  STOP        = 3,
+  HOLD        = 4,
+  UNHOLD      = 5,
+  SUSPEND     = 6,
+  UNSUSPEND   = 7,
+  ABORT       = 8,
+  CLEAR       = 9
+};
+
+inline std::ostream& operator<< (std::ostream& os, TransitionCmd cmd)
+{
+  switch (cmd)
+  {
+  case TransitionCmd::NO_COMMAND: return os << "NO_COMMAND";
+  case TransitionCmd::RESET:      return os << "RESET";
+  case TransitionCmd::START:      return os << "START";
+  case TransitionCmd::STOP:       return os << "STOP";
+  case TransitionCmd::HOLD:       return os << "HOLD";
+  case TransitionCmd::UNHOLD:     return os << "UNHOLD";
+  case TransitionCmd::SUSPEND:    return os << "SUSPEND";
+  case TransitionCmd::UNSUSPEND:  return os << "UNSUSPEND";
+  case TransitionCmd::ABORT:      return os << "ABORT";
+  case TransitionCmd::CLEAR:      return os << "CLEAR";
+  };
+  return os << static_cast<typename std::underlying_type<TransitionCmd>::type>(cmd);
+}
+
 }  // namespace packml_sm
 #endif  // PACKML_SM__COMMON_HPP_

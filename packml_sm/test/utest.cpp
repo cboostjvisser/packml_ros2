@@ -21,7 +21,7 @@
 #include <chrono>
 #include <memory>
 #include "packml_sm/common.hpp"
-#include "packml_sm/events.hpp"
+// #include "packml_sm/events.hpp"
 #include "packml_sm/state_machine.hpp"
 #include "rclcpp/rclcpp.hpp"
 
@@ -41,7 +41,7 @@ void qtWorker(int argc, char * argv[])
  */
 
 
-bool waitForState(packml_sm::StatesEnum state, packml_sm::StateMachine & sm)
+bool waitForState(packml_sm::State state, packml_sm::StateMachine & sm)
 {
   const double TIMEOUT = 2.0;
   const int SAMPLES = 50;
@@ -81,24 +81,24 @@ TEST(Packml_sm, single_cycle_state_machine_set_execute_state)
   std::this_thread::sleep_for(std::chrono::seconds(1));
   bool answer1 = sm->clear();
   ASSERT_TRUE(answer1 == true);
-  bool answer2 = waitForState(packml_sm::StatesEnum::STOPPED, *sm);
+  bool answer2 = waitForState(packml_sm::State::STOPPED, *sm);
   ASSERT_TRUE(answer2 == true);
   bool answer3 = sm->reset();
   ASSERT_TRUE(answer3 == true);
-  bool answer4 = waitForState(packml_sm::StatesEnum::IDLE, *sm);
+  bool answer4 = waitForState(packml_sm::State::IDLE, *sm);
   ASSERT_TRUE(answer4 == true);
   bool answer5 = sm->start();
   ASSERT_TRUE(answer5 == true);
-  bool answer6 = waitForState(packml_sm::StatesEnum::COMPLETE, *sm);
+  bool answer6 = waitForState(packml_sm::State::COMPLETE, *sm);
   ASSERT_TRUE(answer6 == true);
   bool answer7 = sm->reset();
   ASSERT_TRUE(answer7 == true);
-  bool answer8 = waitForState(packml_sm::StatesEnum::IDLE, *sm);
+  bool answer8 = waitForState(packml_sm::State::IDLE, *sm);
   ASSERT_TRUE(answer8 == true);
   sm->setExecute(std::bind(fail));
   bool answer9 = sm->start();
   ASSERT_TRUE(answer9 == true);
-  bool answer10 = waitForState(packml_sm::StatesEnum::ABORTED, *sm);
+  bool answer10 = waitForState(packml_sm::State::ABORTED, *sm);
   ASSERT_TRUE(answer10 == true);
 }
 
@@ -111,54 +111,54 @@ TEST(Packml_sm, single_Cycle_state_machine_follow_diagram)
   std::this_thread::sleep_for(std::chrono::seconds(1));
   bool answer1 = sm.isActive();
   ASSERT_TRUE(answer1 == true);
-  bool answer2 = waitForState(packml_sm::StatesEnum::ABORTED, sm);
+  bool answer2 = waitForState(packml_sm::State::ABORTED, sm);
   ASSERT_TRUE(answer2 == true);
   bool answer3 = sm.isActive();
   ASSERT_TRUE(answer3 == true);
   sm.clear();
-  bool answer6 = waitForState(packml_sm::StatesEnum::STOPPED, sm);
+  bool answer6 = waitForState(packml_sm::State::STOPPED, sm);
   ASSERT_TRUE(answer6 == true);
   bool answer7 = sm.reset();
   ASSERT_TRUE(answer7 == true);
-  bool answer9 = waitForState(packml_sm::StatesEnum::IDLE, sm);
+  bool answer9 = waitForState(packml_sm::State::IDLE, sm);
   ASSERT_TRUE(answer9 == true);
   bool answer10 = sm.start();
   ASSERT_TRUE(answer10 == true);
-  bool answer12 = waitForState(packml_sm::StatesEnum::EXECUTE, sm);
+  bool answer12 = waitForState(packml_sm::State::EXECUTE, sm);
   ASSERT_TRUE(answer12 == true);
-  bool answer14 = waitForState(packml_sm::StatesEnum::COMPLETE, sm);
+  bool answer14 = waitForState(packml_sm::State::COMPLETE, sm);
   ASSERT_TRUE(answer14 == true);
   bool answer15 = sm.reset();
   ASSERT_TRUE(answer15 == true);
-  bool answer17 = waitForState(packml_sm::StatesEnum::IDLE, sm);
+  bool answer17 = waitForState(packml_sm::State::IDLE, sm);
   ASSERT_TRUE(answer17 == true);
   bool answer18 = sm.start();
   ASSERT_TRUE(answer18 == true);
-  bool answer20 = waitForState(packml_sm::StatesEnum::EXECUTE, sm);
+  bool answer20 = waitForState(packml_sm::State::EXECUTE, sm);
   ASSERT_TRUE(answer20 == true);
   bool answer21 = sm.hold();
   ASSERT_TRUE(answer21 == true);
-  bool answer23 = waitForState(packml_sm::StatesEnum::HELD, sm);
+  bool answer23 = waitForState(packml_sm::State::HELD, sm);
   ASSERT_TRUE(answer23 == true);
   bool answer24 = sm.unhold();
   ASSERT_TRUE(answer24 == true);
-  bool answer26 = waitForState(packml_sm::StatesEnum::EXECUTE, sm);
+  bool answer26 = waitForState(packml_sm::State::EXECUTE, sm);
   ASSERT_TRUE(answer26 == true);
   bool answer27 = sm.suspend();
   ASSERT_TRUE(answer27 == true);
-  bool answer29 = waitForState(packml_sm::StatesEnum::SUSPENDED, sm);
+  bool answer29 = waitForState(packml_sm::State::SUSPENDED, sm);
   ASSERT_TRUE(answer29 == true);
   bool answer30 = sm.unsuspend();
   ASSERT_TRUE(answer30 == true);
-  bool answer32 = waitForState(packml_sm::StatesEnum::EXECUTE, sm);
+  bool answer32 = waitForState(packml_sm::State::EXECUTE, sm);
   ASSERT_TRUE(answer32 == true);
   bool answer33 = sm.stop();
   ASSERT_TRUE(answer33 == true);
-  bool answer35 = waitForState(packml_sm::StatesEnum::STOPPED, sm);
+  bool answer35 = waitForState(packml_sm::State::STOPPED, sm);
   ASSERT_TRUE(answer35 == true);
   bool answer36 = sm.abort();
   ASSERT_TRUE(answer36 == true);
-  bool answer38 = waitForState(packml_sm::StatesEnum::ABORTED, sm);
+  bool answer38 = waitForState(packml_sm::State::ABORTED, sm);
   ASSERT_TRUE(answer38 == true);
   sm.deactivate();
   std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -173,47 +173,47 @@ TEST(Packml_sm, continuous_execution_state_machine_follow_diagram)
   sm.activate();
   std::this_thread::sleep_for(std::chrono::seconds(1));
   EXPECT_TRUE(sm.isActive());
-  bool answer1 = waitForState(packml_sm::StatesEnum::ABORTED, sm);
+  bool answer1 = waitForState(packml_sm::State::ABORTED, sm);
   ASSERT_TRUE(answer1 == true);
   bool answer2 = sm.isActive();
   ASSERT_TRUE(answer2 == true);
   bool answer3 = sm.clear();
   ASSERT_TRUE(answer3 == true);
-  bool answer5 = waitForState(packml_sm::StatesEnum::STOPPED, sm);
+  bool answer5 = waitForState(packml_sm::State::STOPPED, sm);
   ASSERT_TRUE(answer5 == true);
   bool answer6 = sm.reset();
   ASSERT_TRUE(answer6 == true);
-  bool answer8 = waitForState(packml_sm::StatesEnum::IDLE, sm);
+  bool answer8 = waitForState(packml_sm::State::IDLE, sm);
   ASSERT_TRUE(answer8 == true);
   bool answer9 = sm.start();
   ASSERT_TRUE(answer9 == true);
-  bool answer11 = waitForState(packml_sm::StatesEnum::EXECUTE, sm);
+  bool answer11 = waitForState(packml_sm::State::EXECUTE, sm);
   ASSERT_TRUE(answer11 == true);
-  bool answer13 = waitForState(packml_sm::StatesEnum::COMPLETE, sm);
+  bool answer13 = waitForState(packml_sm::State::COMPLETE, sm);
   ASSERT_TRUE(answer13 == false);
   bool answer14 = sm.hold();
   ASSERT_TRUE(answer14 == true);
-  bool answer16 = waitForState(packml_sm::StatesEnum::HELD, sm);
+  bool answer16 = waitForState(packml_sm::State::HELD, sm);
   ASSERT_TRUE(answer16 == true);
   bool answer17 = sm.unhold();
   ASSERT_TRUE(answer17 == true);
-  bool answer19 = waitForState(packml_sm::StatesEnum::EXECUTE, sm);
+  bool answer19 = waitForState(packml_sm::State::EXECUTE, sm);
   ASSERT_TRUE(answer19 == true);
   bool answer20 = sm.suspend();
   ASSERT_TRUE(answer20 == true);
-  bool answer22 = waitForState(packml_sm::StatesEnum::SUSPENDED, sm);
+  bool answer22 = waitForState(packml_sm::State::SUSPENDED, sm);
   ASSERT_TRUE(answer22 == true);
   bool answer23 = sm.unsuspend();
   ASSERT_TRUE(answer23 == true);
-  bool answer25 = waitForState(packml_sm::StatesEnum::EXECUTE, sm);
+  bool answer25 = waitForState(packml_sm::State::EXECUTE, sm);
   ASSERT_TRUE(answer25 == true);
   bool answer26 = sm.stop();
   ASSERT_TRUE(answer26 == true);
-  bool answer28 = waitForState(packml_sm::StatesEnum::STOPPED, sm);
+  bool answer28 = waitForState(packml_sm::State::STOPPED, sm);
   ASSERT_TRUE(answer28 == true);
   bool answer29 = sm.abort();
   ASSERT_TRUE(answer29 == true);
-  bool answer31 = waitForState(packml_sm::StatesEnum::ABORTED, sm);
+  bool answer31 = waitForState(packml_sm::State::ABORTED, sm);
   ASSERT_TRUE(answer31 == true);
   sm.deactivate();
   std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -226,7 +226,7 @@ TEST(Packml_sm, testing_failed_state_transition_executions)
   sm.setExecute(std::bind(success));
   sm.activate();
   std::this_thread::sleep_for(std::chrono::seconds(1));
-  waitForState(packml_sm::StatesEnum::ABORTED, sm);
+  waitForState(packml_sm::State::ABORTED, sm);
   bool answer3 = sm.start();
   ASSERT_TRUE(answer3 == false);
   bool answer4 = sm.reset();
@@ -244,7 +244,7 @@ TEST(Packml_sm, testing_failed_state_transition_executions)
   bool answer10 = sm.abort();
   ASSERT_TRUE(answer10 == false);
   sm.clear();
-  waitForState(packml_sm::StatesEnum::STOPPED, sm);
+  waitForState(packml_sm::State::STOPPED, sm);
   bool answer12 = sm.unhold();
   ASSERT_TRUE(answer12 == false);
   bool answer13 = sm.clear();
@@ -265,7 +265,7 @@ TEST(Packml_sm, testing_setResetting)
   sm.setResetting(std::bind(success));
   sm.activate();
   std::this_thread::sleep_for(std::chrono::seconds(1));
-  waitForState(packml_sm::StatesEnum::ABORTED, sm);
+  waitForState(packml_sm::State::ABORTED, sm);
   EXPECT_TRUE(sm.isActive());
 }
 
