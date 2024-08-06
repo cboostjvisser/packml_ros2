@@ -27,7 +27,7 @@ void PackmlState::onEntry(QEvent * /*e*/)  // NOLINT(readability/casting)
 {
   std::cout << "Entering state: " << name_.toUtf8().constData() << "(" << state_ << ")" <<
     std::endl;
-  emit stateEntered(static_cast<int>(state_), name_);
+  emit stateEntered(state_, name_);
   enter_time_ = std::chrono::system_clock::now();
 }
 

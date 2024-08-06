@@ -40,15 +40,29 @@ std::ostream & operator<<(
 }
 
 
+/* Super states that encapsulate multiple substates with a common transition
+* Not explicitly used in the standard but helpful for constructing the state
+* machine.
+*/
 enum class SuperState {
-  /* Super states that encapsulate multiple substates with a common transition
-  * Not explicitly used in the standard but helpful for constructing the state
-  * machine.
-  */
-
   ABORTABLE = 0,
   STOPPABLE = 1
 };
+
+inline std::string to_string(const SuperState& state)
+{
+  switch (state) {
+    case SuperState::ABORTABLE: return "ABORTABLE";
+    case SuperState::STOPPABLE: return "STOPPABLE";
+  }
+  return std::to_string(static_cast<typename std::underlying_type<SuperState>::type>(state));
+}
+
+inline std::ostream& operator<< (std::ostream& os, SuperState state)
+{
+  return os << to_string(state);
+}
+
 
 // Aligned with State.msg enum
 enum class State
@@ -113,17 +127,20 @@ enum class Mode
   MANUAL      = 3
 };
 
+inline std::string to_string(const Mode& mode)
+{
+  switch (mode) {
+    case Mode::UNDEFINED:   return "UNDEFINED";
+    case Mode::PRODUCTION:  return "PRODUCTION";
+    case Mode::MAINTENANCE: return "MAINTENANCE";
+    case Mode::MANUAL:      return "MANUAL";
+  }
+  return std::to_string(static_cast<typename std::underlying_type<Mode>::type>(mode));
+}
+
 inline std::ostream& operator<< (std::ostream& os, Mode mode)
 {
-  switch (mode)
-  {
-  case Mode::UNDEFINED:   return os << "UNDEFINED";
-  case Mode::PRODUCTION:  return os << "PRODUCTION";
-  case Mode::MAINTENANCE: return os << "MAINTENANCE";
-  case Mode::MANUAL:      return os << "MANUAL";
-    break;
-  };
-  return os << static_cast<typename std::underlying_type<Mode>::type>(mode);
+  return os << to_string(mode);
 }
 
 // Aligned with Transition.srv
@@ -141,22 +158,27 @@ enum class TransitionCmd
   CLEAR       = 9
 };
 
-inline std::ostream& operator<< (std::ostream& os, TransitionCmd cmd)
+inline std::string to_string(const TransitionCmd& command)
 {
-  switch (cmd)
+  switch (command)
   {
-  case TransitionCmd::NO_COMMAND: return os << "NO_COMMAND";
-  case TransitionCmd::RESET:      return os << "RESET";
-  case TransitionCmd::START:      return os << "START";
-  case TransitionCmd::STOP:       return os << "STOP";
-  case TransitionCmd::HOLD:       return os << "HOLD";
-  case TransitionCmd::UNHOLD:     return os << "UNHOLD";
-  case TransitionCmd::SUSPEND:    return os << "SUSPEND";
-  case TransitionCmd::UNSUSPEND:  return os << "UNSUSPEND";
-  case TransitionCmd::ABORT:      return os << "ABORT";
-  case TransitionCmd::CLEAR:      return os << "CLEAR";
-  };
-  return os << static_cast<typename std::underlying_type<TransitionCmd>::type>(cmd);
+    case TransitionCmd::NO_COMMAND: return "NO_COMMAND";
+    case TransitionCmd::RESET:      return "RESET";
+    case TransitionCmd::START:      return "START";
+    case TransitionCmd::STOP:       return "STOP";
+    case TransitionCmd::HOLD:       return "HOLD";
+    case TransitionCmd::UNHOLD:     return "UNHOLD";
+    case TransitionCmd::SUSPEND:    return "SUSPEND";
+    case TransitionCmd::UNSUSPEND:  return "UNSUSPEND";
+    case TransitionCmd::ABORT:      return "ABORT";
+    case TransitionCmd::CLEAR:      return "CLEAR";
+  }
+  return std::to_string(static_cast<typename std::underlying_type<TransitionCmd>::type>(command));
+}
+
+inline std::ostream& operator<< (std::ostream& os, TransitionCmd command)
+{
+  return os << to_string(command);
 }
 
 }  // namespace packml_sm

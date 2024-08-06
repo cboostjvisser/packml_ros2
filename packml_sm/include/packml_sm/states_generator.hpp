@@ -31,6 +31,7 @@
 namespace packml_sm
 {
     class StatesGenerator {
+        public:
         enum class TransitionType
         {
             ERROR,
@@ -38,7 +39,7 @@ namespace packml_sm
             COMMAND
         };
 
-        public:
+
 
         // IDLE  |-CMD Start->  Starting  |-SC->  Execute
 
@@ -46,126 +47,123 @@ namespace packml_sm
         {
             printf("Forming state machine (states + transitions)\n");
             // Naming <from state>_<to state>
+
+            // Create SuperState
             PackmlSuperState *abortable = PackmlSuperState::Abortable();
             PackmlSuperState *stoppable = PackmlSuperState::Stoppable(abortable);
 
+            // Create Packml states
             ActingState * Aborting = ActingState::Aborting();
+            WaitState   * Aborted = WaitState::Aborted();
+            ActingState * Clearing = ActingState::Clearing(abortable);
+            ActingState * Stopping = ActingState::Stopping(abortable);
+            WaitState   * Stopped = WaitState::Stopped(abortable);
+            ActingState * Resetting = ActingState::Resetting(stoppable);
+            WaitState   * Idle = WaitState::Idle(stoppable);
+            ActingState * Starting = ActingState::Starting(stoppable);
+            ActingState * Execute = ActingState::Execute(stoppable);
+            ActingState * Holding = ActingState::Holding(stoppable);
+            WaitState   * Held = WaitState::Held(stoppable);
+            ActingState * Unholding = ActingState::Unholding(stoppable);
+            ActingState * Suspending = ActingState::Suspending(stoppable);
+            WaitState   * Suspended = WaitState::Suspended(stoppable);
+            ActingState * Unsuspending = ActingState::Unsuspending(stoppable);
+            ActingState * Completing = ActingState::Completing(stoppable);
+            WaitState   * Complete = WaitState::Complete(stoppable);
 
+            // TODO: We add abortable state because we need to add it to the state machine. But its not official packml state. See if we can save elsewhere
+            add_state(abortable);
+            add_state(Aborting);
+            add_state(Aborted);
+            add_state(Clearing);
+            add_state(Stopping);
+            add_state(Stopped);
+            add_state(Resetting);
+            add_state(Idle);
+            add_state(Starting);
+            // Dual state; Acting and Waiting state at the same time
+            add_state(Execute);
+            add_state(Holding);
+            add_state(Held);
+            add_state(Unholding);
+            add_state(Suspending);
+            add_state(Suspended);
+            add_state(Unsuspending);
+            add_state(Completing);
+            add_state(Complete);
+
+            // Create transitions
             auto abortable_aborting = generate_transition(Aborting, TransitionType::COMMAND);
             auto abortable_aborting_on_error = generate_transition(Aborting, TransitionType::ERROR);
 
             abortable->addTransition(abortable_aborting);
             abortable->addTransition(abortable_aborting_on_error);
 
-            this->add_state(Aborting);
-
-            add_state(abortable);
-
-
-            WaitState * Aborted = WaitState::Aborted();
-
             auto aborting_aborted = generate_transition(Aborted, TransitionType::STATE_COMPLETED);
             Aborting->addTransition(aborting_aborted);
-
-            this->add_state(Aborted);
-
-            ActingState * Clearing = ActingState::Clearing(abortable);
 
             auto aborted_clearing = generate_transition(Clearing, TransitionType::COMMAND);
             Aborted->addTransition(aborted_clearing);
 
-            this->add_state(Clearing);
-
-            WaitState * Stopped = WaitState::Stopped(abortable);
-
             auto clearing_stopped = generate_transition(Stopped, TransitionType::STATE_COMPLETED);
             Clearing->addTransition(clearing_stopped);
 
-
-            ActingState * Stopping = ActingState::Stopping(abortable);
             auto stoppable_stopping = generate_transition(Stopping, TransitionType::COMMAND);
             stoppable->addTransition(stoppable_stopping);
-            this->add_state(Stopping);
 
-            // WaitState * Stopped = WaitState::Stopped(abortable);
             auto stopping_stopped = generate_transition(Stopped, TransitionType::STATE_COMPLETED);
             Stopping->addTransition(stopping_stopped);
 
-            this->add_state(Stopped);
-
-            ActingState * Resetting = ActingState::Resetting(stoppable);
             auto stopped_resetting = generate_transition(Resetting, TransitionType::COMMAND);
             Stopped->addTransition(stopped_resetting);
-            this->add_state(Resetting);
 
-            WaitState * Idle = WaitState::Idle(stoppable);
             auto resetting_idle = generate_transition(Idle, TransitionType::STATE_COMPLETED);
             Resetting->addTransition(resetting_idle);
-            this->add_state(Idle);
 
-            ActingState * Starting = ActingState::Starting(stoppable);
             auto idle_starting = generate_transition(Starting, TransitionType::COMMAND);
             Idle->addTransition(idle_starting);
-            add_state(Starting);
 
-            // Dual state; Acting and Waiting state at the same time
-            ActingState * Execute = ActingState::Execute(stoppable);
             auto starting_execute = generate_transition(Execute, TransitionType::STATE_COMPLETED);
             Starting->addTransition(starting_execute);
-            add_state(Execute);
 
-            ActingState * Holding = ActingState::Holding(stoppable);
             auto execute_holding = generate_transition(Holding, TransitionType::COMMAND);
             Execute->addTransition(execute_holding);
-            add_state(Holding);
 
-            WaitState * Held = WaitState::Held(stoppable);
             auto holding_held = generate_transition(Held, TransitionType::STATE_COMPLETED);
             Holding->addTransition(holding_held);
-            add_state(Held);
 
-            ActingState * Unholding = ActingState::Unholding(stoppable);
             auto held_unholding = generate_transition(Unholding, TransitionType::COMMAND);
             Held->addTransition(held_unholding);
-            add_state(Unholding);
 
             auto unholding_execute = generate_transition(Execute, TransitionType::STATE_COMPLETED);
             Unholding->addTransition(unholding_execute);
 
-            ActingState * Suspending = ActingState::Suspending(stoppable);
             auto execute_suspending = generate_transition(Suspending, TransitionType::COMMAND);
             Execute->addTransition(execute_suspending);
-            add_state(Suspending);
 
-            WaitState * Suspended = WaitState::Suspended(stoppable);
             auto suspending_suspended = generate_transition(Suspended, TransitionType::STATE_COMPLETED);
             Suspending->addTransition(suspending_suspended);
-            add_state(Suspended);
 
-            ActingState * Unsuspending = ActingState::Unsuspending(stoppable);
             auto suspended_unsuspending = generate_transition(Unsuspending, TransitionType::COMMAND);
             Suspended->addTransition(suspended_unsuspending);
-            add_state(Unsuspending);
 
             auto unsuspending_execute = generate_transition(Execute, TransitionType::STATE_COMPLETED);
             Unsuspending->addTransition(unsuspending_execute);
 
-            ActingState * Completing = ActingState::Completing(stoppable);
             auto execute_completing = generate_transition(Completing, TransitionType::STATE_COMPLETED);
             Execute->addTransition(execute_completing);
-            add_state(Completing);
 
-            WaitState * Complete = WaitState::Complete(stoppable);
             auto completing_complete = generate_transition(Complete, TransitionType::STATE_COMPLETED);
             Completing->addTransition(completing_complete);
-            add_state(Complete);
 
             auto complete_resetting = generate_transition(Resetting, TransitionType::COMMAND);
             Complete->addTransition(complete_resetting);
 
+            // Set initial states of super states
             abortable->setInitialState(Clearing);
             stoppable->setInitialState(Resetting);
 
+            // Don't forget to set state machine initial state, currently set elsewhere
             // sm_internal_.setInitialState(Aborted);
             printf("State machine formed\n");
         }
@@ -183,6 +181,7 @@ namespace packml_sm
             }
             else if (trans_type == TransitionType::COMMAND)
             {
+                // TODO: pass transition command instead of checking target state
                 switch (transition_to->state()) {
                 case State::CLEARING:
                 {

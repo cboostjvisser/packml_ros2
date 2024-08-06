@@ -28,6 +28,7 @@
 // #include "packml_sm/events.hpp"
 #include <iostream>
 
+#include "packml_sm/common.hpp"
 #include "packml_sm/states/toplevel_states.hpp"
 
 #include "packml_sm/states/acting_state.hpp"
@@ -45,6 +46,7 @@ namespace packml_sm
   {
     void endSelectTransitions(QEvent *event) override
     {
+      // TODO: fill a future/promise here, so we can return if a state change completed succesfully
       if (event->type() == PACKML_CMD_EVENT_TYPE)
       {
         std::cout << "We are here! Event: " << event->type() << std::endl;
@@ -97,7 +99,7 @@ public:
   /**
   * @brief Function that returns the current state of the state machine
   */
-  virtual int getCurrentState() = 0;
+  virtual State getCurrentState() = 0;
 
 
   /**
@@ -223,8 +225,6 @@ class StateMachine : public QObject, public StateMachineInterface
 {
   Q_OBJECT
 
-
-
 public:
   /**
   * @brief Function to create a single cycle state machine (executes once)
@@ -276,7 +276,7 @@ public:
   /**
   * @brief Function that returns the current state of the state machine
   */
-  int getCurrentState()
+  State getCurrentState()
   {
     return state_value_;
   }
@@ -352,7 +352,7 @@ protected:
   /**
   * @brief Number of the current state
   */
-  int state_value_;
+  State state_value_;
 
 
   /**
@@ -485,7 +485,7 @@ protected slots:
   * @param value - state number
   * @param name - state name
   */
-  void setState(int value, QString name);
+  void setState(State value, QString name);
 
 signals:
   /**
@@ -493,7 +493,7 @@ signals:
   * @param value - new state number
   * @param name - new state name
   */
-  void stateChanged(int value, QString name);
+  void stateChanged(State value, QString name);
 };
 
 

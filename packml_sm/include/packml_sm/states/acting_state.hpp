@@ -98,13 +98,13 @@ public:
 
 
   ActingState(State state_value, int delay_ms_value = 200)
-    : PackmlState(state_value, QString(to_string(state_value).c_str())), delay_ms(delay_ms_value) {}
+    : PackmlState(state_value, to_string(state_value).c_str()), delay_ms(delay_ms_value) {}
 
   ActingState(State state_value, QState * super_state, int delay_ms_value = 200)
-    : PackmlState(state_value, QString(to_string(state_value).c_str()), super_state), delay_ms(delay_ms_value) {}
+    : PackmlState(state_value, to_string(state_value).c_str(), super_state), delay_ms(delay_ms_value) {}
 
   ActingState(State state_value, QState * super_state, std::function<int()> function_value)
-    : PackmlState(state_value, QString(to_string(state_value).c_str()), super_state), function_(function_value) {}
+    : PackmlState(state_value, to_string(state_value).c_str(), super_state), function_(function_value) {}
 
   bool setOperationMethod(std::function<int()> function_value)
   {

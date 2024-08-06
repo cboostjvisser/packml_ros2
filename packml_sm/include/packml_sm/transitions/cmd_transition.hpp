@@ -42,7 +42,7 @@ public:
   }
   static CmdTransition * clear()
   {
-    return new CmdTransition(TransitionCmd::CLEAR, "clear");
+    return new CmdTransition(TransitionCmd::CLEAR, to_string(TransitionCmd::CLEAR).c_str());
   }
 
 
@@ -57,7 +57,7 @@ public:
   }
     static CmdTransition * start()
   {
-    return new CmdTransition(TransitionCmd::START, "start");
+    return new CmdTransition(TransitionCmd::START, to_string(TransitionCmd::START).c_str());
   }
 
 
@@ -72,7 +72,7 @@ public:
   }
   static CmdTransition * stop()
   {
-    return new CmdTransition(TransitionCmd::STOP, "stop");
+    return new CmdTransition(TransitionCmd::STOP, to_string(TransitionCmd::STOP).c_str());
   }
 
 
@@ -87,8 +87,23 @@ public:
   }
   static CmdTransition * hold()
   {
-    return new CmdTransition(TransitionCmd::HOLD, "hold");
+    return new CmdTransition(TransitionCmd::HOLD, to_string(TransitionCmd::HOLD).c_str());
   }
+
+  /**
+  * @brief Function to transition to the unhold state
+  * @param from - original state
+  * @param to - ending state
+  */
+  static CmdTransition * unhold(PackmlState & from, PackmlState & to)
+  {
+    return new CmdTransition(TransitionCmd::UNHOLD, "unhold", from, to);
+  }
+  static CmdTransition * unhold()
+  {
+    return new CmdTransition(TransitionCmd::UNHOLD, to_string(TransitionCmd::UNHOLD).c_str());
+  }
+
 
 
   /**
@@ -102,9 +117,8 @@ public:
   }
   static CmdTransition * abort()
   {
-    return new CmdTransition(TransitionCmd::ABORT, "abort");
+    return new CmdTransition(TransitionCmd::ABORT, to_string(TransitionCmd::ABORT).c_str());
   }
-
 
 
   /**
@@ -118,7 +132,7 @@ public:
   }
   static CmdTransition * reset()
   {
-    return new CmdTransition(TransitionCmd::RESET, "reset");
+    return new CmdTransition(TransitionCmd::RESET, to_string(TransitionCmd::RESET).c_str());
   }
 
   // /**
@@ -143,7 +157,7 @@ public:
   }
   static CmdTransition * suspend()
   {
-    return new CmdTransition(TransitionCmd::SUSPEND, "suspend");
+    return new CmdTransition(TransitionCmd::SUSPEND, to_string(TransitionCmd::SUSPEND).c_str());
   }
 
 
@@ -158,24 +172,8 @@ public:
   }
   static CmdTransition * unsuspend()
   {
-    return new CmdTransition(TransitionCmd::UNSUSPEND, "unsuspend");
+    return new CmdTransition(TransitionCmd::UNSUSPEND, to_string(TransitionCmd::UNSUSPEND).c_str());
   }
-
-
-  /**
-  * @brief Function to transition to the unhold state
-  * @param from - original state
-  * @param to - ending state
-  */
-  static CmdTransition * unhold(PackmlState & from, PackmlState & to)
-  {
-    return new CmdTransition(TransitionCmd::UNHOLD, "unhold", from, to);
-  }
-  static CmdTransition * unhold()
-  {
-    return new CmdTransition(TransitionCmd::UNHOLD, "unhold");
-  }
-
 
   /**
   * @brief Function to define a transition from a triggering event

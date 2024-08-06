@@ -47,7 +47,7 @@ bool waitForState(packml_sm::State state, packml_sm::StateMachine & sm)
   const int SAMPLES = 50;
   rclcpp::Rate r(static_cast<double>(SAMPLES) / TIMEOUT);
   for (int ii = 0; ii < SAMPLES; ++ii) {
-    if (sm.getCurrentState() == static_cast<int>(state)) {
+    if (sm.getCurrentState() == state) {
       std::cout << "State changed to " << state << std::endl;
       return true;
     }

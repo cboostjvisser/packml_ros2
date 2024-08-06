@@ -38,14 +38,16 @@ bool CmdTransition::eventTest(QEvent *e) {
     return false;
   }
   CmdEvent *se = static_cast<CmdEvent *>(e);
+
+  std::cout << "Received transition command: " << se->cmd
+            << " on transition: " << this->name.toStdString() << std::endl;
+
   //    ROS_INFO_STREAM("Type cmd: " << cmd << ", event cmd: " << se->cmd);
   if (cmd == se->cmd) {
     e->accept();
     return true;
   }
 
-  std::cout << "Received transition command: " << cmd
-            << " on transition: " << this->name.toStdString() << std::endl;
 
   std::cout << "Event is not for this transition" << std::endl;
 

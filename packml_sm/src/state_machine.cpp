@@ -262,51 +262,51 @@ StateMachine::StateMachine() {
   aborting_ = ActingState::Aborting();
   execute_ = ActingState::Execute(stoppable_);
 
-  connect(abortable_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(stoppable_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(unholding_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(held_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(holding_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(idle_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(starting_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(completing_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(complete_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(resetting_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(unsuspending_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(suspended_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(suspending_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(stopped_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(stopping_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(clearing_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(aborted_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(aborting_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
-  connect(execute_, SIGNAL(stateEntered(int, QString)), this,
-          SLOT(setState(int, QString))); // NOLINT(whitespace/comma)
+  connect(abortable_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(stoppable_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(unholding_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(held_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(holding_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(idle_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(starting_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(completing_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(complete_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(resetting_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(unsuspending_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(suspended_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(suspending_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(stopped_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(stopping_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(clearing_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(aborted_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(aborting_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+  connect(execute_, SIGNAL(stateEntered(State, QString)), this,
+          SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
   printf("Adding states to state machine\n");
-  // sm_internal_.addState(abortable_);
-  // sm_internal_.addState(aborted_);
-  // sm_internal_.addState(aborting_);
+  sm_internal_.addState(abortable_);
+  sm_internal_.addState(aborted_);
+  sm_internal_.addState(aborting_);
 }
 
-void StateMachine::setState(int value, QString name) {
+void StateMachine::setState(State value, QString name) {
   std::string nameUtf = name.toStdString();
   std::cout << "State changed(event) to: " << nameUtf << "(" << value << ")"
             << std::endl;
@@ -443,12 +443,29 @@ SingleCycle::SingleCycle() {
   // stoppable_->setInitialState(resetting_);
 
   gen.generate_all_packml_states();
+  // Add parent states to state machine
   sm_internal_.addState(gen.states["Abortable"]);
   sm_internal_.addState(gen.states[to_string(State::ABORTED)]);
   sm_internal_.addState(gen.states[to_string(State::ABORTING)]);
 
   sm_internal_.setInitialState(gen.states[to_string(State::ABORTED)]);
   printf("End of single cycle\n");
+
+  // Test to see if we can adjust the state machines transitions
+  auto list = gen.states[to_string(State::EXECUTE)]->transitions();
+  for (const auto& item : list)
+  {
+      if (item->targetState() == gen.states[to_string(State::COMPLETING)])
+      {
+        std::cout << "Foind transition!" << std::endl;
+        gen.states[to_string(State::EXECUTE)]->removeTransition(item);
+        std::cout << "Removed transition!" << std::endl;
+        auto trans = gen.generate_transition(gen.states[to_string(State::EXECUTE)], StatesGenerator::TransitionType::STATE_COMPLETED);
+        gen.states[to_string(State::EXECUTE)]->addTransition(trans);
+        std::cout << "Added transition to self!" << std::endl;
+      }
+  }
+
 }
 
 } // namespace packml_sm

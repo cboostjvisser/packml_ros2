@@ -42,7 +42,7 @@ public:
   virtual ~PackmlState() {}
 
 signals:
-  void stateEntered(int value, QString name);
+  void stateEntered(State value, QString name);
 
 protected:
   State state_;

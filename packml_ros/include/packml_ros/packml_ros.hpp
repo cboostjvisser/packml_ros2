@@ -167,7 +167,7 @@ public:
         std::stringstream ss;
         std::cout << "Evaluating transition request command: " << command_int << std::endl;
         switch (command_int) {
-          case packml_msgs::srv::Transition::Request::ABORT /*5*/:
+          case packml_msgs::srv::Transition::Request::ABORT:
             command_rtn = sm->abort();
             break;
           case packml_msgs::srv::Transition::Request::STOP:
@@ -230,7 +230,7 @@ public:
       [this](const std::shared_ptr<packml_msgs::srv::AllStatus::Request> req,
         std::shared_ptr<packml_msgs::srv::AllStatus::Response> res) -> void {
         (void)req;
-        int curr_state_ = getCurrentState();
+        packml_sm::State curr_state_ = getCurrentState();
         res->stopped_state = false;
         res->idle_state = false;
         res->starting_state = false;
@@ -249,71 +249,71 @@ public:
         res->resetting_state = false;
         res->stopping_state = false;
         switch (curr_state_) {
-          case 2:
+          case packml_sm::State::STOPPED:
             res->stopped_state = true;
             stopped_state_t = stopped_state_t + 0.2;
             break;
-          case 3:
+          case packml_sm::State::STARTING:
             res->starting_state = true;
             starting_state_t = starting_state_t + 0.2;
             break;
-          case 4:
+          case packml_sm::State::IDLE:
             res->idle_state = true;
             idle_state_t = idle_state_t + 0.2;
             break;
-          case 5:
+          case packml_sm::State::SUSPENDED:
             res->suspended_state = true;
             suspended_state_t = suspended_state_t + 0.2;
             break;
-          case 6:
+          case packml_sm::State::EXECUTE:
             res->execute_state = true;
             execute_state_t = execute_state_t + 0.2;
             break;
-          case 7:
+          case packml_sm::State::STOPPING:
             res->stopping_state = true;
             stopping_state_t = stopping_state_t + 0.2;
             break;
-          case 8:
+          case packml_sm::State::ABORTING:
             res->aborting_state = true;
             aborting_state_t = aborting_state_t + 0.2;
             break;
-          case 9:
+          case packml_sm::State::ABORTED:
             res->aborted_state = true;
             aborted_state_t = aborted_state_t + 0.2;
             break;
-          case 10:
+          case packml_sm::State::HOLDING:
             res->holding_state = true;
             holding_state_t = holding_state_t + 0.2;
             break;
-          case 11:
+          case packml_sm::State::HELD:
             res->held_state = true;
             held_state_t = held_state_t + 0.2;
             break;
-          case 100:
+          case packml_sm::State::RESETTING:
             res->resetting_state = true;
             resetting_state_t = resetting_state_t + 0.2;
             break;
-          case 101:
+          case packml_sm::State::SUSPENDING:
             res->suspending_state = true;
             suspending_state_t = suspending_state_t + 0.2;
             break;
-          case 102:
+          case packml_sm::State::UNSUSPENDING:
             res->unsuspending_state = true;
             unsuspending_state_t = unsuspending_state_t + 0.2;
             break;
-          case 103:
+          case packml_sm::State::CLEARING:
             res->clearing_state = true;
             clearing_state_t = clearing_state_t + 0.2;
             break;
-          case 104:
+          case packml_sm::State::UNHOLDING:
             res->unholding_state = true;
             unholding_state_t = unholding_state_t + 0.2;
             break;
-          case 105:
+          case packml_sm::State::COMPLETING:
             res->completing_state = true;
             completing_state_t = completing_state_t + 0.2;
             break;
-          case 106:
+          case packml_sm::State::COMPLETE:
             res->complete_state = true;
             complete_state_t = complete_state_t + 0.2;
             break;
@@ -371,7 +371,7 @@ public:
   * @brief Function to query for the current state machine state.
   * @return state int
   */
-  virtual int getCurrentState()
+  virtual packml_sm::State getCurrentState()
   {
     return sm->getCurrentState();
   }

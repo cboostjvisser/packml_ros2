@@ -28,7 +28,7 @@ public:
   explicit MockSMNode(rclcpp::Node::SharedPtr node)
   : SMNode(node) {}
 
-  MOCK_METHOD0(getCurrentState, int());
+  MOCK_METHOD0(getCurrentState, packml_sm::State());
 };
 
 
@@ -223,7 +223,7 @@ TEST(Packml_ros, test_statusRequest_commands_2)
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(2));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::STOPPED));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -244,7 +244,7 @@ TEST(Packml_ros, test_statusRequest_commands_3)
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(3));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::STARTING));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -265,7 +265,7 @@ TEST(Packml_ros, test_statusRequest_commands_4)
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(4));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::IDLE));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -286,7 +286,7 @@ TEST(Packml_ros, test_statusRequest_commands_5)
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(5));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::SUSPENDED));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -307,7 +307,7 @@ TEST(Packml_ros, test_statusRequest_commands_6)
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(6));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::EXECUTE));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -328,7 +328,7 @@ TEST(Packml_ros, test_statusRequest_commands_7)
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(7));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::STOPPING));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -349,7 +349,7 @@ TEST(Packml_ros, test_statusRequest_commands_8)
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(8));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::ABORTING));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -370,7 +370,7 @@ TEST(Packml_ros, test_statusRequest_commands_9)
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(9));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::ABORTED));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -391,7 +391,7 @@ TEST(Packml_ros, test_statusRequest_commands_10)
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(10));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::HOLDING));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -412,7 +412,7 @@ TEST(Packml_ros, test_statusRequest_commands_11)
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(11));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::HELD));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -428,12 +428,12 @@ TEST(Packml_ros, test_statusRequest_commands_11)
   EXPECT_TRUE(check1 == true);
 }
 
-TEST(Packml_ros, test_statusRequest_commands_100)
+TEST(Packml_ros, test_statusRequest_commands_12)
 {
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(100));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::UNHOLDING));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -449,12 +449,12 @@ TEST(Packml_ros, test_statusRequest_commands_100)
   EXPECT_TRUE(check1 == true);
 }
 
-TEST(Packml_ros, test_statusRequest_commands_101)
+TEST(Packml_ros, test_statusRequest_commands_13)
 {
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(101));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::SUSPENDING));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -470,12 +470,12 @@ TEST(Packml_ros, test_statusRequest_commands_101)
   EXPECT_TRUE(check1 == true);
 }
 
-TEST(Packml_ros, test_statusRequest_commands_102)
+TEST(Packml_ros, test_statusRequest_commands_14)
 {
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(102));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::UNSUSPENDING));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -491,12 +491,12 @@ TEST(Packml_ros, test_statusRequest_commands_102)
   EXPECT_TRUE(check1 == true);
 }
 
-TEST(Packml_ros, test_statusRequest_commands_103)
+TEST(Packml_ros, test_statusRequest_commands_15)
 {
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(103));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::RESETTING));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -512,12 +512,12 @@ TEST(Packml_ros, test_statusRequest_commands_103)
   EXPECT_TRUE(check1 == true);
 }
 
-TEST(Packml_ros, test_statusRequest_commands_104)
+TEST(Packml_ros, test_statusRequest_commands_16)
 {
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(104));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::COMPLETING));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -533,33 +533,12 @@ TEST(Packml_ros, test_statusRequest_commands_104)
   EXPECT_TRUE(check1 == true);
 }
 
-TEST(Packml_ros, test_statusRequest_commands_105)
+TEST(Packml_ros, test_statusRequest_commands_17)
 {
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(105));
-  auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
-  update->command = true;
-  auto result_future = status_client_->async_send_request(update);
-  bool check1 = false;
-  if (rclcpp::spin_until_future_complete(
-      node,
-      result_future) == rclcpp::FutureReturnCode::SUCCESS)
-  {
-    check1 = true;
-  } else {
-    check1 = false;
-  }
-  EXPECT_TRUE(check1 == true);
-}
-
-TEST(Packml_ros, test_statusRequest_commands_106)
-{
-  auto node = rclcpp::Node::make_shared("packml_ros_node");
-  auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
-  MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(106));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::COMPLETE));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
@@ -580,7 +559,7 @@ TEST(Packml_ros, test_statusRequest_commands_wrong)
   auto node = rclcpp::Node::make_shared("packml_ros_node");
   auto status_client_ = node->create_client<packml_msgs::srv::AllStatus>("allStatus");
   MockSMNode thenode(node);
-  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(0));
+  EXPECT_CALL(thenode, getCurrentState()).WillOnce(Return(packml_sm::State::UNDEFINED));
   auto update = std::make_shared<packml_msgs::srv::AllStatus::Request>();
   update->command = true;
   auto result_future = status_client_->async_send_request(update);
