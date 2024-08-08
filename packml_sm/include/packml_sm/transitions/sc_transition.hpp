@@ -62,6 +62,6 @@ protected:
   * @brief Function to trigger an action when the transition is happening
   * @param e - triggering event
   */
-  virtual void onTransition(QEvent * e) {std::cout << e << std::endl;}
+  virtual void onTransition(QEvent * e) {std::cout << "State Complete! type: " << e->type() << std::endl;}
 };
 } // namespace packml_sm

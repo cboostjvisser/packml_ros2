@@ -25,8 +25,8 @@ CmdTransition::CmdTransition(const TransitionCmd &cmd_value,
                              const QString &name_value, PackmlState &from,
                              PackmlState &to)
     : cmd(cmd_value), name(name_value) {
-  // this->setTargetState(&to);
-  // from.addTransition(this);
+  this->setTargetState(&to);
+  from.addTransition(this);
   std::cout << "Creating " << this->name.toStdString() << " transition from "
             << from.name() << " to " << to.name()
             << std::endl;
@@ -34,6 +34,7 @@ CmdTransition::CmdTransition(const TransitionCmd &cmd_value,
 
 bool CmdTransition::eventTest(QEvent *e) {
   //    ROS_INFO_STREAM("Testing event type: " << e->type());
+  std::cout << "Event type: " << e->type() << std::endl;
   if (e->type() != QEvent::Type(PACKML_CMD_EVENT_TYPE)) {
     return false;
   }

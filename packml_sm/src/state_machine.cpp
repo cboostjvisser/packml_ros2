@@ -16,6 +16,7 @@
 #include "packml_sm/state_machine.hpp"
 
 #include "packml_sm/common.hpp"
+#include "packml_sm/states/wait_state.hpp"
 #include "packml_sm/states_generator.hpp"
 #include "packml_sm/transitions/cmd_transition.hpp"
 #include "packml_sm/transitions/sc_transition.hpp"
@@ -23,15 +24,17 @@
 
 // #include "packml_sm/events.hpp"
 #include "packml_sm/states/acting_state.hpp"
+#include <future>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
 
 namespace packml_sm {
 
 bool StateMachineInterface::start() {
-  _start();
-  return true;
+  return _start();
+  // return true;
   // switch (State(getCurrentState())) {
   // case State::IDLE:
   //   _start();
@@ -44,11 +47,11 @@ bool StateMachineInterface::start() {
 }
 
 bool StateMachineInterface::clear() {
-  _clear();
-  return true;
+  return _clear();
+  // return true;
   // switch (State(getCurrentState())) {
   // case State::ABORTED:
-  //   _clear();
+  //   return _clear();
   //   return true;
   // default:
   //   std::cout << "Ignoring CLEAR command in current state: "
@@ -58,8 +61,8 @@ bool StateMachineInterface::clear() {
 }
 
 bool StateMachineInterface::reset() {
-  _reset();
-  return true;
+  return _reset();
+  // return true;
   // switch (State(getCurrentState())) {
   // case State::COMPLETE:
   // case State::STOPPED:
@@ -73,8 +76,8 @@ bool StateMachineInterface::reset() {
 }
 
 bool StateMachineInterface::hold() {
-  _hold();
-  return true;
+  return _hold();
+  // return true;
   // switch (State(getCurrentState())) {
   // case State::EXECUTE:
   //   _hold();
@@ -87,8 +90,8 @@ bool StateMachineInterface::hold() {
 }
 
 bool StateMachineInterface::unhold() {
-  _unhold();
-  return true;
+  return _unhold();
+  // return true;
   // switch (State(getCurrentState())) {
   // case State::HELD:
   //   _unhold();
@@ -101,8 +104,8 @@ bool StateMachineInterface::unhold() {
 }
 
 bool StateMachineInterface::suspend() {
-  _suspend();
-  return true;
+  return _suspend();
+  // return true;
   // switch (State(getCurrentState())) {
   // case State::EXECUTE:
   //   _suspend();
@@ -115,8 +118,8 @@ bool StateMachineInterface::suspend() {
 }
 
 bool StateMachineInterface::unsuspend() {
-  _unsuspend();
-  return true;
+  return _unsuspend();
+  // return true;
   // switch (State(getCurrentState())) {
   // case State::SUSPENDED:
   //   _unsuspend();
@@ -129,8 +132,8 @@ bool StateMachineInterface::unsuspend() {
 }
 
 bool StateMachineInterface::stop() {
-  _stop();
-  return true;
+  return _stop();
+  // return true;
   // switch (State(getCurrentState())) {
   // // case StatesEnum::STOPPABLE:
   // case State::STARTING:
@@ -154,8 +157,8 @@ bool StateMachineInterface::stop() {
 }
 
 bool StateMachineInterface::abort() {
-  _abort();
-  return true;
+  return _abort();
+  // return true;
   // switch (State(getCurrentState())) {
   // // case StatesEnum::ABORTABLE:
   // case State::STOPPED:
@@ -214,11 +217,17 @@ bool StateMachine::deactivate() {
 
 
 std::shared_ptr<StateMachine> StateMachine::singleCyleSM() {
-  return std::shared_ptr<StateMachine>(new SingleCycle());
+  auto SS = std::make_shared<SingleCycle>();
+  SS->init();
+  return SS;
+  // return std::shared_ptr<StateMachine>(new SingleCycle());
 }
 
 std::shared_ptr<StateMachine> StateMachine::continuousCycleSM() {
-  return std::shared_ptr<StateMachine>(new ContinuousCycle());
+  auto CS = std::make_shared<ContinuousCycle>();
+  CS->init();
+  return CS;
+  // return std::shared_ptr<StateMachine>(new ContinuousCycle());
 }
 
 /*
@@ -237,7 +246,7 @@ std::shared_ptr<StateMachine> StateMachine::continuousCycleSM() {
  * that reference/utilize many of the same transitions/states (maybe)
  */
 
-StateMachine::StateMachine() {
+StateMachine::StateMachine() : gen(std::make_shared<StatesGenerator>()) {
   printf("State machine constructor\n");
   // printf("Constructiong super states\n");
   abortable_ = PackmlSuperState::Abortable();
@@ -266,6 +275,7 @@ StateMachine::StateMachine() {
           SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
   connect(stoppable_, SIGNAL(stateEntered(State, QString)), this,
           SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+
   connect(unholding_, SIGNAL(stateEntered(State, QString)), this,
           SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
   connect(held_, SIGNAL(stateEntered(State, QString)), this,
@@ -300,6 +310,7 @@ StateMachine::StateMachine() {
           SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
   connect(execute_, SIGNAL(stateEntered(State, QString)), this,
           SLOT(setState(State, QString))); // NOLINT(whitespace/comma)
+
   printf("Adding states to state machine\n");
   sm_internal_.addState(abortable_);
   sm_internal_.addState(aborted_);
@@ -316,6 +327,7 @@ void StateMachine::setState(State value, QString name) {
 }
 
 bool StateMachine::setExecute(std::function<int()> execute_method) {
+
   printf("Initializing state machine with EXECUTE function pointer\n");
   return execute_->setOperationMethod(execute_method);
 }
@@ -325,68 +337,120 @@ bool StateMachine::setResetting(std::function<int()> resetting_method) {
   return resetting_->setOperationMethod(resetting_method);
 }
 
-void StateMachine::_start() { sm_internal_.postEvent(CmdEvent::start()); }
-void StateMachine::_clear() { sm_internal_.postEvent(CmdEvent::clear()); }
-void StateMachine::_reset() { sm_internal_.postEvent(CmdEvent::reset()); }
-void StateMachine::_hold() { sm_internal_.postEvent(CmdEvent::hold()); }
-void StateMachine::_unhold() { sm_internal_.postEvent(CmdEvent::unhold()); }
-void StateMachine::_suspend() { sm_internal_.postEvent(CmdEvent::suspend()); }
-void StateMachine::_unsuspend() { sm_internal_.postEvent(CmdEvent::unsuspend()); }
-void StateMachine::_stop() { sm_internal_.postEvent(CmdEvent::stop()); }
-void StateMachine::_abort() { sm_internal_.postEvent(CmdEvent::abort()); }
+std::expected<bool, std::string> StateMachine::changeMode(ModeType mode)
+{
+  StatesGenerator::AvailableStates avail{
+    {State::ABORTING, true},
+    {State::ABORTED, true},
+    {State::CLEARING, true},
+    {State::STOPPED, true},
+    {State::RESETTING, true},
+    {State::IDLE, true},
+    {State::STARTING, true},
+    {State::EXECUTE, true},
+    {State::HOLDING, true},
+    {State::HELD, true},
+    {State::UNHOLDING, true},
+    {State::SUSPENDING, true},
+    {State::SUSPENDED, true},
+    {State::UNSUSPENDING, true},
+    {State::COMPLETING, true},
+    {State::COMPLETE, true},};
+
+  StatesGenerator::Mode mode1 = StatesGenerator::Mode(to_string(mode), avail);
+
+  return gen->mode_switcher(shared_from_this(), mode1);
+}
+
+bool StateMachine::_start() {     sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::start());     return sm_internal_.prom.get_future().get(); }
+bool StateMachine::_clear() {     sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::clear());     return sm_internal_.prom.get_future().get(); }
+bool StateMachine::_reset() {     sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::reset());     return sm_internal_.prom.get_future().get(); }
+bool StateMachine::_hold() {      sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::hold());      return sm_internal_.prom.get_future().get(); }
+bool StateMachine::_unhold() {    sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::unhold());    return sm_internal_.prom.get_future().get(); }
+bool StateMachine::_suspend() {   sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::suspend());   return sm_internal_.prom.get_future().get(); }
+bool StateMachine::_unsuspend() { sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::unsuspend()); return sm_internal_.prom.get_future().get(); }
+bool StateMachine::_stop() {      sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::stop());      return sm_internal_.prom.get_future().get(); }
+bool StateMachine::_abort() {     sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::abort());     return sm_internal_.prom.get_future().get(); }
 
 ContinuousCycle::ContinuousCycle() {
   printf("Forming CONTINUOUS CYCLE state machine (states + transitions)\n");
-  // Naming <from state>_<to state>
-  CmdTransition::abort(*abortable_, *aborting_);
-  ErrorTransition *abortable_aborting_on_error =
-      new ErrorTransition(*abortable_, *aborting_);
+  // // Naming <from state>_<to state>
+  // CmdTransition::abort(*abortable_, *aborting_);
+  // ErrorTransition *abortable_aborting_on_error =
+  //     new ErrorTransition(*abortable_, *aborting_);
 
-  StateCompleteTransition *aborting_aborted =
-      new StateCompleteTransition(*aborting_, *aborted_);
+  // StateCompleteTransition *aborting_aborted =
+  //     new StateCompleteTransition(*aborting_, *aborted_);
 
-  CmdTransition::clear(*aborted_, *clearing_);
-  StateCompleteTransition *clearing_stopped_ =
-      new StateCompleteTransition(*clearing_, *stopped_);
+  // CmdTransition::clear(*aborted_, *clearing_);
+  // StateCompleteTransition *clearing_stopped_ =
+  //     new StateCompleteTransition(*clearing_, *stopped_);
 
-  CmdTransition::stop(*stoppable_, *stopping_);
-  StateCompleteTransition *stopping_stopped =
-      new StateCompleteTransition(*stopping_, *stopped_);
+  // CmdTransition::stop(*stoppable_, *stopping_);
+  // StateCompleteTransition *stopping_stopped =
+  //     new StateCompleteTransition(*stopping_, *stopped_);
 
-  CmdTransition::reset(*stopped_, *resetting_);
-  StateCompleteTransition *unholding_execute_ =
-      new StateCompleteTransition(*unholding_, *execute_);
+  // CmdTransition::reset(*stopped_, *resetting_);
+  // StateCompleteTransition *unholding_execute_ =
+  //     new StateCompleteTransition(*unholding_, *execute_);
 
-  CmdTransition::unhold(*held_, *unholding_);
-  StateCompleteTransition *holding_held_ =
-      new StateCompleteTransition(*holding_, *held_);
+  // CmdTransition::unhold(*held_, *unholding_);
+  // StateCompleteTransition *holding_held_ =
+  //     new StateCompleteTransition(*holding_, *held_);
 
-  CmdTransition::start(*idle_, *starting_);
-  StateCompleteTransition *starting_execute_ =
-      new StateCompleteTransition(*starting_, *execute_);
+  // CmdTransition::start(*idle_, *starting_);
+  // StateCompleteTransition *starting_execute_ =
+  //     new StateCompleteTransition(*starting_, *execute_);
 
-  CmdTransition::hold(*execute_, *holding_);
-  StateCompleteTransition *execute_execute_ =
-      new StateCompleteTransition(*execute_, *execute_);
+  // CmdTransition::hold(*execute_, *holding_);
+  // StateCompleteTransition *execute_execute_ =
+  //     new StateCompleteTransition(*execute_, *execute_);
 
-  StateCompleteTransition *completing_complete =
-      new StateCompleteTransition(*completing_, *complete_);
+  // StateCompleteTransition *completing_complete =
+  //     new StateCompleteTransition(*completing_, *complete_);
 
-  CmdTransition::reset(*complete_, *resetting_);
-  StateCompleteTransition *resetting_idle_ =
-      new StateCompleteTransition(*resetting_, *idle_);
+  // CmdTransition::reset(*complete_, *resetting_);
+  // StateCompleteTransition *resetting_idle_ =
+  //     new StateCompleteTransition(*resetting_, *idle_);
 
-  CmdTransition::suspend(*execute_, *suspending_);
-  StateCompleteTransition *suspending_suspended_ =
-      new StateCompleteTransition(*suspending_, *suspended_);
+  // CmdTransition::suspend(*execute_, *suspending_);
+  // StateCompleteTransition *suspending_suspended_ =
+  //     new StateCompleteTransition(*suspending_, *suspended_);
 
-  CmdTransition::unsuspend(*suspended_, *unsuspending_);
-  StateCompleteTransition *unsuspending_execute_ =
-      new StateCompleteTransition(*unsuspending_, *execute_);
+  // CmdTransition::unsuspend(*suspended_, *unsuspending_);
+  // StateCompleteTransition *unsuspending_execute_ =
+  //     new StateCompleteTransition(*unsuspending_, *execute_);
 
-  abortable_->setInitialState(clearing_);
-  stoppable_->setInitialState(resetting_);
-  sm_internal_.setInitialState(aborted_);
+  // abortable_->setInitialState(clearing_);
+  // stoppable_->setInitialState(resetting_);
+  // sm_internal_.setInitialState(aborted_);
+}
+void ContinuousCycle::init(){
+  gen->generate_all_packml_states(shared_from_this());
+  // Add parent states to state machine
+  sm_internal_.addState(gen->states["Abortable"]);
+  sm_internal_.addState(gen->states[to_string(State::ABORTED)]);
+  sm_internal_.addState(gen->states[to_string(State::ABORTING)]);
+
+  sm_internal_.setInitialState(gen->states[to_string(State::ABORTED)]);
+
+  // Test to see if we can adjust the state machines transitions
+  auto list = gen->states[to_string(State::EXECUTE)]->transitions();
+  for (const auto& item : list)
+  {
+      if (item->targetState() == gen->states[to_string(State::COMPLETING)])
+      {
+        std::cout << "Found transition!" << std::endl;
+        gen->states[to_string(State::EXECUTE)]->removeTransition(item);
+        std::cout << "Removed transition!" << std::endl;
+        auto trans = gen->generate_transition(gen->states[to_string(State::EXECUTE)], StatesGenerator::TransitionType::STATE_COMPLETED);
+        gen->states[to_string(State::EXECUTE)]->addTransition(trans);
+        std::cout << "Added transition to self!" << std::endl;
+      }
+  }
+
+  ((ActingState*) gen->states[to_string(State::EXECUTE)])->setOperationMethod(std::bind([]()->int {std::this_thread::sleep_for(std::chrono::seconds(1));return 0;}));
+
   printf("State machine formed\n");
 }
 
@@ -442,29 +506,34 @@ SingleCycle::SingleCycle() {
   // abortable_->setInitialState(clearing_);
   // stoppable_->setInitialState(resetting_);
 
-  gen.generate_all_packml_states();
-  // Add parent states to state machine
-  sm_internal_.addState(gen.states["Abortable"]);
-  sm_internal_.addState(gen.states[to_string(State::ABORTED)]);
-  sm_internal_.addState(gen.states[to_string(State::ABORTING)]);
-
-  sm_internal_.setInitialState(gen.states[to_string(State::ABORTED)]);
-  printf("End of single cycle\n");
-
-  // Test to see if we can adjust the state machines transitions
-  auto list = gen.states[to_string(State::EXECUTE)]->transitions();
-  for (const auto& item : list)
-  {
-      if (item->targetState() == gen.states[to_string(State::COMPLETING)])
-      {
-        std::cout << "Foind transition!" << std::endl;
-        gen.states[to_string(State::EXECUTE)]->removeTransition(item);
-        std::cout << "Removed transition!" << std::endl;
-        auto trans = gen.generate_transition(gen.states[to_string(State::EXECUTE)], StatesGenerator::TransitionType::STATE_COMPLETED);
-        gen.states[to_string(State::EXECUTE)]->addTransition(trans);
-        std::cout << "Added transition to self!" << std::endl;
-      }
   }
+void SingleCycle::init(){
+  gen->generate_all_packml_states(shared_from_this());
+  // Add parent states to state machine
+  sm_internal_.addState(gen->states["Abortable"]);
+  sm_internal_.addState(gen->states[to_string(State::ABORTED)]);
+  sm_internal_.addState(gen->states[to_string(State::ABORTING)]);
+
+  sm_internal_.setInitialState(gen->states[to_string(State::ABORTED)]);
+
+  // // Test to see if we can adjust the state machines transitions
+  // auto list = gen.states[to_string(State::EXECUTE)]->transitions();
+  // for (const auto& item : list)
+  // {
+  //     if (item->targetState() == gen.states[to_string(State::COMPLETING)])
+  //     {
+  //       std::cout << "Foind transition!" << std::endl;
+  //       gen.states[to_string(State::EXECUTE)]->removeTransition(item);
+  //       std::cout << "Removed transition!" << std::endl;
+  //       auto trans = gen.generate_transition(gen.states[to_string(State::EXECUTE)], StatesGenerator::TransitionType::STATE_COMPLETED);
+  //       gen.states[to_string(State::EXECUTE)]->addTransition(trans);
+  //       std::cout << "Added transition to self!" << std::endl;
+  //     }
+  // }
+
+  ((ActingState*) gen->states[to_string(State::EXECUTE)])->setOperationMethod(std::bind([]()->int { std::this_thread::sleep_for(std::chrono::seconds(1)); return 0;}));
+
+  printf("End of single cycle setup\n");
 
 }
 

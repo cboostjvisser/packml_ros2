@@ -119,7 +119,7 @@ inline std::ostream& operator<< (std::ostream& os, State state)
 }
 
 // Aligned with Mode.msg
-enum class Mode
+enum class ModeType
 {
   UNDEFINED   = 0,
   PRODUCTION  = 1,
@@ -127,18 +127,18 @@ enum class Mode
   MANUAL      = 3
 };
 
-inline std::string to_string(const Mode& mode)
+inline std::string to_string(const ModeType& mode)
 {
   switch (mode) {
-    case Mode::UNDEFINED:   return "UNDEFINED";
-    case Mode::PRODUCTION:  return "PRODUCTION";
-    case Mode::MAINTENANCE: return "MAINTENANCE";
-    case Mode::MANUAL:      return "MANUAL";
+    case ModeType::UNDEFINED:   return "UNDEFINED";
+    case ModeType::PRODUCTION:  return "PRODUCTION";
+    case ModeType::MAINTENANCE: return "MAINTENANCE";
+    case ModeType::MANUAL:      return "MANUAL";
   }
-  return std::to_string(static_cast<typename std::underlying_type<Mode>::type>(mode));
+  return std::to_string(static_cast<typename std::underlying_type<ModeType>::type>(mode));
 }
 
-inline std::ostream& operator<< (std::ostream& os, Mode mode)
+inline std::ostream& operator<< (std::ostream& os, ModeType mode)
 {
   return os << to_string(mode);
 }

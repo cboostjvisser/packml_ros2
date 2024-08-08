@@ -54,8 +54,7 @@ void ActingState::operation()
     if (0 == error_code) {
       sc = new StateCompleteEvent();
     } else {
-      std::cout << "Operational function returned error code: " << error_code <<
-        std::endl;
+      std::cout << "Operational function returned error code: " << error_code << std::endl;
       sc = new ErrorEvent(error_code);
     }
   } else {

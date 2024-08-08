@@ -36,6 +36,7 @@ int main(int argc, char * argv[])
   std::thread thr(qtWorker, argc, argv);
   while (NULL == QCoreApplication::instance()) {
     printf("Waiting for QCore application to start\n");
+    std::this_thread::sleep_for(std::chrono::seconds(1));
   }
   thr.detach();
   SMNode thenode(node);

@@ -27,6 +27,7 @@
 #include "QAbstractTransition"
 // #include "packml_sm/events.hpp"
 #include <iostream>
+#include <expected>
 
 #include "packml_sm/common.hpp"
 #include "packml_sm/states/toplevel_states.hpp"
@@ -35,7 +36,7 @@
 #include "packml_sm/states/wait_state.hpp"
 
 #include "packml_sm/events/cmd_event.hpp"
-#include "packml_sm/states_generator.hpp"
+// #include "packml_sm/states_generator.hpp"
 // #include "packml_sm/transitions.hpp"
 // #include "rclcpp/rclcpp.hpp"
 
@@ -44,6 +45,7 @@ namespace packml_sm
 
   class PackmlStateMachine : public QStateMachine
   {
+    // https://stackoverflow.com/questions/4818863/how-can-i-detect-ignored-rejected-posted-qevent-to-qstatemachine
     void endSelectTransitions(QEvent *event) override
     {
       // TODO: fill a future/promise here, so we can return if a state change completed succesfully
@@ -52,15 +54,21 @@ namespace packml_sm
         std::cout << "We are here! Event: " << event->type() << std::endl;
         if (event->isAccepted())
         {
+          prom.set_value(true);
           std::cout << "We have accepted the event!" << std::endl;
         }
         else
         {
+          prom.set_value(false);
           std::cout << "Event has not been accepted!" << std::endl;
         }
       }
     }
+  public:
+    std::promise<bool> prom;
   };
+
+    class StatesGenerator;
 
 
 /**
@@ -100,6 +108,8 @@ public:
   * @brief Function that returns the current state of the state machine
   */
   virtual State getCurrentState() = 0;
+
+  virtual std::expected<bool, std::string> changeMode(ModeType mode) = 0;
 
 
   /**
@@ -159,54 +169,54 @@ protected:
   /**
   * @brief Function that binds a QT event to the function for the state start
   */
-  virtual void _start() = 0;
+  virtual bool _start() = 0;
 
 
   /**
   * @brief Function that binds a QT action to the function for the state clear
   */
-  virtual void _clear() = 0;
+  virtual bool _clear() = 0;
 
   /**
   * @brief Function that binds a QT action to the function for the state reset
   */
-  virtual void _reset() = 0;
+  virtual bool _reset() = 0;
 
 
   /**
   * @brief Function that binds a QT action to the function for the state hold
   */
-  virtual void _hold() = 0;
+  virtual bool _hold() = 0;
 
 
   /**
   * @brief Function that binds a QT action to the function for the state unhold
   */
-  virtual void _unhold() = 0;
+  virtual bool _unhold() = 0;
 
 
   /**
   * @brief Function that binds a QT action to the function for the state suspend
   */
-  virtual void _suspend() = 0;
+  virtual bool _suspend() = 0;
 
 
   /**
   * @brief Function that binds a QT action to the function for the state unsuspend
   */
-  virtual void _unsuspend() = 0;
+  virtual bool _unsuspend() = 0;
 
 
   /**
   * @brief Function that binds a QT action to the function for the state stop
   */
-  virtual void _stop() = 0;
+  virtual bool _stop() = 0;
 
 
   /**
   * @brief Function that binds a QT action to the function for the state abort
   */
-  virtual void _abort() = 0;
+  virtual bool _abort() = 0;
 };
 
 
@@ -221,7 +231,7 @@ void init(int argc, char * argv[]);
 /**
 * @brief Class that implements a state machine object
 */
-class StateMachine : public QObject, public StateMachineInterface
+class StateMachine : public QObject, public StateMachineInterface, public std::enable_shared_from_this<StateMachine>
 {
   Q_OBJECT
 
@@ -281,6 +291,8 @@ public:
     return state_value_;
   }
 
+  virtual std::expected<bool, std::string> changeMode(ModeType mode);
+
 
   /**
   * @brief Class destructor
@@ -293,60 +305,60 @@ protected:
   */
   StateMachine();
 
-  StatesGenerator gen;
+  std::shared_ptr<StatesGenerator> gen;
 
   /**
   * @brief Function that binds a QT action to the function for the state start
   */
-  virtual void _start();
+  virtual bool _start();
 
 
   /**
   * @brief Function that binds a QT action to the function for the state clear
   */
-  virtual void _clear();
+  virtual bool _clear();
 
 
   /**
   * @brief Function that binds a QT action to the function for the state reset
   */
-  virtual void _reset();
+  virtual bool _reset();
 
 
   /**
   * @brief Function that binds a QT action to the function for the state hol
   */
-  virtual void _hold();
+  virtual bool _hold();
 
 
   /**
   * @brief Function that binds a QT action to the function for the state unhold
   */
-  virtual void _unhold();
+  virtual bool _unhold();
 
 
   /**
   * @brief Function that binds a QT action to the function for the state suspend
   */
-  virtual void _suspend();
+  virtual bool _suspend();
 
 
   /**
   * @brief Function that binds a QT action to the function for the state unsuspend
   */
-  virtual void _unsuspend();
+  virtual bool _unsuspend();
 
 
   /**
   * @brief Function that binds a QT action to the function for the state stop
   */
-  virtual void _stop();
+  virtual bool _stop();
 
 
   /**
   * @brief Function that binds a QT action to the function for the state abort
   */
-  virtual void _abort();
+  virtual bool _abort();
 
 
   /**
@@ -479,7 +491,7 @@ protected:
   */
   PackmlStateMachine sm_internal_;
 
-protected slots:
+public slots:
   /**
   * @brief Function to start a state
   * @param value - state number
@@ -510,6 +522,7 @@ public:
   */
   ContinuousCycle();
 
+  void init();
 
   /**
   * @brief Class desstructor
@@ -531,6 +544,7 @@ public:
   */
   SingleCycle();
 
+  void init();
 
   /**
   * @brief Class destructor

@@ -21,13 +21,17 @@
 
 #include <memory>
 #include <chrono>
+#include <packml_msgs/msg/detail/mode__struct.hpp>
+#include <packml_msgs/srv/detail/mode_change__struct.hpp>
 #include <packml_msgs/srv/detail/transition__struct.hpp>
 #include <thread>
 #include <sstream>
+#include "packml_sm/common.hpp"
 #include "packml_sm/state_machine.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "packml_msgs/srv/transition.hpp"
 #include "packml_msgs/srv/all_status.hpp"
+#include "packml_msgs/srv//mode_change.hpp"
 
 // Global variables for the node topics and services
 /**
@@ -51,6 +55,8 @@ class SMNode
   * @brief Pointer for state and elapsed time status update service server
   */
   rclcpp::Service<packml_msgs::srv::AllStatus>::SharedPtr status_server_;
+
+  rclcpp::Service<packml_msgs::srv::ModeChange>::SharedPtr mode_server_;
 
   // Global variables to keep track of time the SM has been in a state
   /**
@@ -152,6 +158,45 @@ public:
     sm->setExecute(std::bind(myExecuteMethod));
     sm->activate();
     printf("SM created\n");
+
+
+
+    auto modeRequest = [this](const std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
+                                          std::shared_ptr<packml_msgs::srv::ModeChange::Response> res)-> void {
+
+      packml_sm::ModeType mode;
+
+      switch (req->mode.val) {
+        case packml_msgs::msg::Mode::MAINTENANCE:
+          mode = packml_sm::ModeType::MAINTENANCE;
+          break;
+        case packml_msgs::msg::Mode::MANUAL:
+          mode = packml_sm::ModeType::MANUAL;
+          break;
+        case packml_msgs::msg::Mode::PRODUCTION:
+          mode = packml_sm::ModeType::PRODUCTION;
+          break;
+        case packml_msgs::msg::Mode::UNDEFINED:
+          mode = packml_sm::ModeType::UNDEFINED;
+          break;
+      }
+
+      auto succes = sm->changeMode(mode);
+
+      if (succes.has_value())
+      {
+        res->success = true;
+        res->error_code = res->SUCCESS;
+        res->message = "Succes!";
+      }
+      else
+      {
+        res->success = false;
+        res->error_code = res->INVALID_MODE_REQUEST;
+        res->message = succes.error();
+      }
+
+    };
 
     /**
     * @brief Callback function upon transition request by a client
@@ -345,6 +390,9 @@ public:
     status_server_ = node->create_service<packml_msgs::srv::AllStatus>(
       "allStatus",
       statusRequest);
+    mode_server_ = node->create_service<packml_msgs::srv::ModeChange>(
+      "modeChange",
+      modeRequest);
   }
 
   /**
@@ -360,9 +408,9 @@ public:
   static int myExecuteMethod()
   {
     printf("This is my execute method (begin)\n");
-    while (rclcpp::ok()) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
+    // while (rclcpp::ok()) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    // }
     printf("This is my execute method (end)\n");
     return 0;  // returning zero indicates non-failure
   }
