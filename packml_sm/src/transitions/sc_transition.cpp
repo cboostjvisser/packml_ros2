@@ -17,6 +17,8 @@
 #include "QEvent"
 #include "packml_sm/transitions/sc_transition.hpp"
 #include "packml_sm/events/sc_event.hpp"
+#include "packml_sm/states/state.hpp"
+#include "packml_sm/transitions/packml_transitions.hpp"
 
 namespace packml_sm {
 
@@ -33,6 +35,15 @@ bool StateCompleteTransition::eventTest(QEvent *e) {
   if (e->type() != QEvent::Type(PACKML_STATE_COMPLETE_EVENT_TYPE)) {
     return false;
   }
+
+  // call parent function to test if transition is available
+  bool available = PackmlTransition::eventTest(e);
+
+  if (!available)
+  {
+    return false;
+  }
+
   return true;
 }
 

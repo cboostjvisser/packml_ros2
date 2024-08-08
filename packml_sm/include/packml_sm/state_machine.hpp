@@ -30,28 +30,32 @@
 #include <expected>
 
 #include "packml_sm/common.hpp"
+// #include "packml_sm/events.hpp"
+#include "packml_sm/events/sc_event.hpp"
 #include "packml_sm/states/toplevel_states.hpp"
 
 #include "packml_sm/states/acting_state.hpp"
 #include "packml_sm/states/wait_state.hpp"
 
 #include "packml_sm/events/cmd_event.hpp"
+#include "packml_sm/events/error_event.hpp"
+#include "packml_sm/events/sc_event.hpp"
 // #include "packml_sm/states_generator.hpp"
 // #include "packml_sm/transitions.hpp"
 // #include "rclcpp/rclcpp.hpp"
 
 namespace packml_sm
 {
+   class StatesGenerator;
+
 
   class PackmlStateMachine : public QStateMachine
   {
     // https://stackoverflow.com/questions/4818863/how-can-i-detect-ignored-rejected-posted-qevent-to-qstatemachine
     void endSelectTransitions(QEvent *event) override
     {
-      // TODO: fill a future/promise here, so we can return if a state change completed succesfully
       if (event->type() == PACKML_CMD_EVENT_TYPE)
       {
-        std::cout << "We are here! Event: " << event->type() << std::endl;
         if (event->isAccepted())
         {
           prom.set_value(true);
@@ -63,12 +67,17 @@ namespace packml_sm
           std::cout << "Event has not been accepted!" << std::endl;
         }
       }
+      else if (event->type() == PACKML_ERROR_EVENT_TYPE || event->type() == PACKML_STATE_COMPLETE_EVENT_TYPE)
+      {}
+      else
+      {
+        std::cout << "This is not a user defined event!" << std::endl;
+      }
     }
   public:
     std::promise<bool> prom;
   };
 
-    class StatesGenerator;
 
 
 /**

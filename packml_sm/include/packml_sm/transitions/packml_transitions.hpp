@@ -20,9 +20,9 @@
 
 #include "QEvent"
 #include "QAbstractTransition"
-#include "packml_sm/common.hpp"
-#include "packml_sm/states/state.hpp"
-#include "packml_sm/states_generator.hpp"
+// #include "packml_sm/common.hpp"
+// #include "packml_sm/states/state.hpp"
+// #include "packml_sm/states_generator.hpp"
 
 namespace packml_sm
 {
@@ -36,11 +36,10 @@ public:
   /**
   * @brief Constructor of the class
   */
-  PackmlTransition(std::shared_ptr<std::vector<StatesGenerator::Mode>> modes)
-    : modes(modes) {};
+  PackmlTransition() {}
 
-  std::shared_ptr<std::vector<StatesGenerator::Mode>> modes;
-  std::string current_mode = "";
+//   std::shared_ptr<std::vector<StatesGenerator::Mode>> modes;
+//   std::string current_mode = "";
 
   /**
   * @brief Destructor of the class
@@ -64,7 +63,7 @@ protected:
             }
             else {
                 std::cout << "Transition to next state: is not available in this mode!" << std::endl;
-                // e->ignore();
+                e->ignore();
                 return false;
             }
     //     }
@@ -77,11 +76,6 @@ protected:
   * @param e - triggering event
   */
   virtual void onTransition(QEvent * e) {std::cout << e << std::endl;}
-
-  void onModeChanged(std::string mode)
-  {
-    current_mode = mode;
-  };
 };
 
 }  // namespace packml_sm

@@ -31,6 +31,15 @@ bool ErrorTransition::eventTest(QEvent *e) {
   if (e->type() != QEvent::Type(PACKML_ERROR_EVENT_TYPE)) {
     return false;
   }
+
+  // call parent function to test if transition is available
+  bool available = PackmlTransition::eventTest(e);
+
+  if (!available)
+  {
+    return false;
+  }
+
   return true;
 }
 

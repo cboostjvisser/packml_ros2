@@ -34,7 +34,7 @@ CmdTransition::CmdTransition(const TransitionCmd &cmd_value,
 
 bool CmdTransition::eventTest(QEvent *e) {
   //    ROS_INFO_STREAM("Testing event type: " << e->type());
-  std::cout << "Event type: " << e->type() << std::endl;
+  // std::cout << "Event type: " << e->type() << std::endl;
   if (e->type() != QEvent::Type(PACKML_CMD_EVENT_TYPE)) {
     return false;
   }
@@ -42,6 +42,14 @@ bool CmdTransition::eventTest(QEvent *e) {
 
   std::cout << "Received transition command: " << se->cmd
             << " on transition: " << this->name.toStdString() << std::endl;
+
+  // call parent function to test if transition is available
+  bool available = PackmlTransition::eventTest(e);
+
+  if (!available)
+  {
+    return false;
+  }
 
   //    ROS_INFO_STREAM("Type cmd: " << cmd << ", event cmd: " << se->cmd);
   if (cmd == se->cmd) {

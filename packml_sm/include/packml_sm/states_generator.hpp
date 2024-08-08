@@ -47,6 +47,7 @@ public:
     {State::ABORTING, true},
     {State::ABORTED, true},
     {State::CLEARING, true},
+    {State::STOPPING, true},
     {State::STOPPED, true},
     {State::RESETTING, true},
     {State::IDLE, true},
@@ -97,9 +98,12 @@ public:
         {}
   };
 
+  Mode currentMode{"", {}};
+
   inline std::expected<bool, std::string> mode_switcher(std::shared_ptr<StateMachine> sm, Mode mode_to_switch)
   {
-    if (switch_states.find(sm->getCurrentState()) != switch_states.end())
+    // TODO: Hacky if current mode name is empty; probably uninitialized
+    if (switch_states.find(sm->getCurrentState()) != switch_states.end() || currentMode.name.empty())
     {
       for (auto state : mode_to_switch.available_states)
       {
@@ -107,6 +111,7 @@ public:
         auto state1 = states[to_string(state.first)];
         state1->setProperty("Available", state.second);
       }
+      currentMode = mode_to_switch;
       std::cout << "Switched mode: " << mode_to_switch.name << std::endl;
       return true;
     }

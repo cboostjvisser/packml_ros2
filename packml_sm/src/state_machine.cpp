@@ -219,6 +219,7 @@ bool StateMachine::deactivate() {
 std::shared_ptr<StateMachine> StateMachine::singleCyleSM() {
   auto SS = std::make_shared<SingleCycle>();
   SS->init();
+  SS->changeMode(ModeType::MANUAL);
   return SS;
   // return std::shared_ptr<StateMachine>(new SingleCycle());
 }
@@ -226,6 +227,7 @@ std::shared_ptr<StateMachine> StateMachine::singleCyleSM() {
 std::shared_ptr<StateMachine> StateMachine::continuousCycleSM() {
   auto CS = std::make_shared<ContinuousCycle>();
   CS->init();
+  CS->changeMode(ModeType::MANUAL);
   return CS;
   // return std::shared_ptr<StateMachine>(new ContinuousCycle());
 }
@@ -343,6 +345,7 @@ std::expected<bool, std::string> StateMachine::changeMode(ModeType mode)
     {State::ABORTING, true},
     {State::ABORTED, true},
     {State::CLEARING, true},
+    {State::STOPPING, true},
     {State::STOPPED, true},
     {State::RESETTING, true},
     {State::IDLE, true},
@@ -355,7 +358,33 @@ std::expected<bool, std::string> StateMachine::changeMode(ModeType mode)
     {State::SUSPENDED, true},
     {State::UNSUSPENDING, true},
     {State::COMPLETING, true},
-    {State::COMPLETE, true},};
+    {State::COMPLETE, true},
+  };
+
+  if (mode == ModeType::MAINTENANCE)
+  {
+    // We disabled the state completing here!
+    avail =
+    {
+    {State::ABORTING, true},
+    {State::ABORTED, true},
+    {State::CLEARING, true},
+    {State::STOPPING, true},
+    {State::STOPPED, true},
+    {State::RESETTING, true},
+    {State::IDLE, true},
+    {State::STARTING, true},
+    {State::EXECUTE, true},
+    {State::HOLDING, true},
+    {State::HELD, true},
+    {State::UNHOLDING, true},
+    {State::SUSPENDING, true},
+    {State::SUSPENDED, true},
+    {State::UNSUSPENDING, true},
+    {State::COMPLETING, false},
+    {State::COMPLETE, true},
+    };
+  }
 
   StatesGenerator::Mode mode1 = StatesGenerator::Mode(to_string(mode), avail);
 

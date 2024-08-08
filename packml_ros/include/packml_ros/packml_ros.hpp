@@ -177,6 +177,7 @@ public:
           mode = packml_sm::ModeType::PRODUCTION;
           break;
         case packml_msgs::msg::Mode::UNDEFINED:
+        default:
           mode = packml_sm::ModeType::UNDEFINED;
           break;
       }

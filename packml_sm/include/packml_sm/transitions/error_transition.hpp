@@ -20,6 +20,7 @@
 #include "QEvent"
 #include "QAbstractTransition"
 #include "packml_sm/states/state.hpp"
+#include "packml_sm/transitions/packml_transitions.hpp"
 
 namespace packml_sm
 {
@@ -27,7 +28,7 @@ namespace packml_sm
 /**
 * @brief Class to define transitions that are not valid
 */
-class ErrorTransition : public QAbstractTransition
+class ErrorTransition : public PackmlTransition
 {
 public:
   /**

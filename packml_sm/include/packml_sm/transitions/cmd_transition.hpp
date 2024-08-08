@@ -21,6 +21,7 @@
 #include "QAbstractTransition"
 #include "packml_sm/states/state.hpp"
 #include "packml_sm/common.hpp"
+#include "packml_sm/transitions/packml_transitions.hpp"
 
 namespace packml_sm
 {
@@ -28,7 +29,7 @@ namespace packml_sm
 /**
 * @brief Class that implements transitions between the states of a standard PackML state machine
 */
-class CmdTransition : public QAbstractTransition
+class CmdTransition : public PackmlTransition
 {
 public:
   /**
