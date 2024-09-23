@@ -1,5 +1,5 @@
-# Request a state change from a packml state machine.  The command set is based
-# on the PackML summarized here:
+# Request a State change from a PackML State Machine.
+# The command set is based on the PackML summarized here:
 # http://www.plcopen.org/pages/promotion/publications/downloads/mapping_omac_statediagram.pdf
 # The response is returned as soon as the request is accepted, but not necessarily
 # when the state changes
@@ -11,6 +11,7 @@
 # Chapter 8.2 'SPECIFICATION OF COMMANDS ON UNIT HMI AND FROM EXTERNAL SYSTEM' from 'PackML Unit/Machine Implementation Guide Part 1' Ver. 1.00
 # Downloaded on 25/07/2024 from: https://www.omac.org/packaging-workgroup-solutions
 
+# Available Commands (Commands trigger wait states to acting states)
 int8 NO_COMMAND = 0
 int8 RESET = 1
 int8 START = 2
@@ -24,12 +25,12 @@ int8 CLEAR = 9
 
 int8 command
 ---
-# State machine response
-bool success         # True if command has been accepted
+# State Machine response
+bool success    # True if command has been accepted
+int8 error_code # Error code if command has been rejected
+string message  # Message for display (only for human reading)
 
+# Error codes
 int8 SUCCESS = 1
 int8 INVALID_TRANSITION_REQUEST = -1
 int8 UNRECGONIZED_REQUEST = -2
-int8 error_code       # Error code if command has been rejected
-
-string message        # Message for display (only for human reading)

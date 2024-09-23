@@ -75,7 +75,7 @@ int fail()
 
 TEST(Packml_sm, single_cycle_state_machine_set_execute_state)
 {
-  std::shared_ptr<packml_sm::StateMachine> sm = packml_sm::StateMachine::singleCyleSM();
+  std::shared_ptr<packml_sm::StateMachine> sm = packml_sm::StateMachine::singleCycleSM();
   sm->setExecute(std::bind(success));
   sm->activate();
   std::this_thread::sleep_for(std::chrono::seconds(1));

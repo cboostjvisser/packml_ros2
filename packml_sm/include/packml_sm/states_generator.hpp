@@ -157,6 +157,7 @@ public:
     // TODO: We add abortable state because we need to add it to the state
     // machine. But its not official packml state. See if we can save elsewhere
     add_state(sm, abortable);
+
     add_state(sm, Aborting);
     add_state(sm, Aborted);
     add_state(sm, Clearing);
@@ -277,64 +278,65 @@ public:
                                                   TransitionType trans_type) {
     QAbstractTransition *transition;
     if (trans_type == TransitionType::ERROR) {
-      transition = new ErrorTransition();
+      transition = new ErrorTransition(); // NOLINT, this is how qt works
     } else if (trans_type == TransitionType::STATE_COMPLETED) {
-      transition = new StateCompleteTransition();
+      transition = new StateCompleteTransition(); // NOLINT, this is how qt works
     } else if (trans_type == TransitionType::COMMAND) {
       // TODO: pass transition command instead of checking target state
       switch (transition_to->state()) {
-      case State::CLEARING: {
-        transition = CmdTransition::clear();
-        break;
-      }
-      case State::STARTING: {
-        transition = CmdTransition::start();
-        break;
-      }
-      case State::STOPPING: {
-        transition = CmdTransition::stop();
-        break;
-      }
-      case State::ABORTING: {
-        transition = CmdTransition::abort();
-        break;
-      }
-      case State::HOLDING: {
-        transition = CmdTransition::hold();
-        break;
-      }
-      case State::UNHOLDING: {
-        transition = CmdTransition::unhold();
-        break;
-      }
-      case State::SUSPENDING: {
-        transition = CmdTransition::suspend();
-        break;
-      }
-      case State::UNSUSPENDING: {
-        transition = CmdTransition::unsuspend();
-        break;
-      }
-      case State::RESETTING: {
-        transition = CmdTransition::reset();
-        break;
-      }
-      case State::UNDEFINED:
-      case State::STOPPED:
-      case State::IDLE:
-      case State::SUSPENDED:
-      case State::EXECUTE:
-      case State::ABORTED:
-      case State::HELD:
-      case State::COMPLETING:
-      case State::COMPLETE:
-        std::cout << "Fell through Transition switch, returning 'No Command' "
-                     "transition"
-                  << std::endl;
-        transition = new CmdTransition(TransitionCmd::NO_COMMAND, "No_Command");
+        case State::CLEARING: {
+          transition = CmdTransition::clear();
+          break;
+        }
+        case State::STARTING: {
+          transition = CmdTransition::start();
+          break;
+        }
+        case State::STOPPING: {
+          transition = CmdTransition::stop();
+          break;
+        }
+        case State::ABORTING: {
+          transition = CmdTransition::abort();
+          break;
+        }
+        case State::HOLDING: {
+          transition = CmdTransition::hold();
+          break;
+        }
+        case State::UNHOLDING: {
+          transition = CmdTransition::unhold();
+          break;
+        }
+        case State::SUSPENDING: {
+          transition = CmdTransition::suspend();
+          break;
+        }
+        case State::UNSUSPENDING: {
+          transition = CmdTransition::unsuspend();
+          break;
+        }
+        case State::RESETTING: {
+          transition = CmdTransition::reset();
+          break;
+        }
+        case State::UNDEFINED:
+        case State::STOPPED:
+        case State::IDLE:
+        case State::SUSPENDED:
+        case State::EXECUTE:
+        case State::ABORTED:
+        case State::HELD:
+        case State::COMPLETING:
+        case State::COMPLETE:
+        default: {
+            std::cout << "Fell through Transition switch, returning 'No Command' "
+                        "transition" << std::endl;
+            transition = new CmdTransition(TransitionCmd::NO_COMMAND, "No_Command"); // NOLINT, this is how qt works
+        }
       }
     } else {
-      transition = new CmdTransition(TransitionCmd::NO_COMMAND, "No_Command");
+      transition = new CmdTransition(TransitionCmd::NO_COMMAND, "No_Command"); // NOLINT, this is how qt works
       // transition = CmdTransition(TransitionCmd::NO_COMMAND,
       // QString(to_string(TransitionCmd::NO_COMMAND)));
     }
@@ -355,10 +357,12 @@ public:
       std::cout << "Added state: " << state->name() << std::endl;
 
       // auto function = std::bind(StateMachine::setState )
-
-       StateMachine::connect(state, &PackmlState::stateEntered, sm.get(),
+      // Hacky way to filter out superstates. This way we do not get events from super states.
+      if (state->state() != State::UNDEFINED) {
+        // Connect State Entered Event to Set State function
+        StateMachine::connect(state, &PackmlState::stateEntered, sm.get(),
           &StateMachine::setState); // NOLINT(whitespace/comma)
-
+      }
       // transition->setTargetState(state);
       // previous_state->addTransition(transition);
     } else {

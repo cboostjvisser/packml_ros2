@@ -29,8 +29,6 @@ namespace packml_sm
 * enumerations
 * see: http://stackoverflow.com/questions/11421432/how-can-i-output-the-value-of-an-enum-class-in-c11
 */
-
-
 template<typename T>
 std::ostream & operator<<(
   typename std::enable_if<std::is_enum<T>::value,
@@ -67,24 +65,24 @@ inline std::ostream& operator<< (std::ostream& os, SuperState state)
 // Aligned with State.msg enum
 enum class State
 {
-  UNDEFINED   = 0,
-  CLEARING    = 1,
-  STOPPED     = 2,
-  STARTING    = 3,
-  IDLE        = 4,
-  SUSPENDED   = 5,
-  EXECUTE     = 6,
-  STOPPING    = 7,
-  ABORTING    = 8,
-  ABORTED     = 9,
-  HOLDING     = 10,
-  HELD        = 11,
-  UNHOLDING   = 12,
-  SUSPENDING  = 13,
+  UNDEFINED    = 0,
+  CLEARING     = 1,
+  STOPPED      = 2,
+  STARTING     = 3,
+  IDLE         = 4,
+  SUSPENDED    = 5,
+  EXECUTE      = 6,
+  STOPPING     = 7,
+  ABORTING     = 8,
+  ABORTED      = 9,
+  HOLDING      = 10,
+  HELD         = 11,
+  UNHOLDING    = 12,
+  SUSPENDING   = 13,
   UNSUSPENDING = 14,
-  RESETTING   = 15,
-  COMPLETING  = 16,
-  COMPLETE    = 17,
+  RESETTING    = 15,
+  COMPLETING   = 16,
+  COMPLETE     = 17,
 };
 
 inline std::string to_string(const State& state)
@@ -134,6 +132,9 @@ inline std::string to_string(const ModeType& mode)
     case ModeType::PRODUCTION:  return "PRODUCTION";
     case ModeType::MAINTENANCE: return "MAINTENANCE";
     case ModeType::MANUAL:      return "MANUAL";
+  }
+  if (mode > ModeType::MANUAL) {
+    return "USER_DEFINED";
   }
   return std::to_string(static_cast<typename std::underlying_type<ModeType>::type>(mode));
 }

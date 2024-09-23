@@ -1,0 +1,14 @@
+# Trigger a State change on a PackML Node.
+# The response is returned when the State has changed on the node
+
+State state
+
+---
+# PackML Node Response
+bool success    # True if State has been changed
+int8 error_code # Error code if State could not be changed
+string message  # Message for display (only for human reading)
+
+# Error Codes
+int8 SUCCESS = 1
+int8 INVALID_STATE_REQUEST = -1

@@ -57,7 +57,6 @@ bool CmdTransition::eventTest(QEvent *e) {
     return true;
   }
 
-
   std::cout << "Event is not for this transition" << std::endl;
 
   e->ignore();

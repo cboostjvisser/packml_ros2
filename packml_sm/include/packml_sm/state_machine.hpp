@@ -40,13 +40,14 @@
 #include "packml_sm/events/cmd_event.hpp"
 #include "packml_sm/events/error_event.hpp"
 #include "packml_sm/events/sc_event.hpp"
+#include "packml_sm/transitions/cmd_transition.hpp"
 // #include "packml_sm/states_generator.hpp"
 // #include "packml_sm/transitions.hpp"
 // #include "rclcpp/rclcpp.hpp"
 
 namespace packml_sm
 {
-   class StatesGenerator;
+  class StatesGenerator;
 
 
   class PackmlStateMachine : public QStateMachine
@@ -68,12 +69,15 @@ namespace packml_sm
         }
       }
       else if (event->type() == PACKML_ERROR_EVENT_TYPE || event->type() == PACKML_STATE_COMPLETE_EVENT_TYPE)
-      {}
+      {
+        // We can do something here with these custom packml events
+      }
       else
       {
         std::cout << "This is not a user defined event!" << std::endl;
       }
     }
+
   public:
     std::promise<bool> prom;
   };
@@ -119,6 +123,8 @@ public:
   virtual State getCurrentState() = 0;
 
   virtual std::expected<bool, std::string> changeMode(ModeType mode) = 0;
+
+  virtual std::expected<bool, std::string> changeState(TransitionCmd command) = 0;
 
 
   /**
@@ -248,7 +254,7 @@ public:
   /**
   * @brief Function to create a single cycle state machine (executes once)
   */
-  static std::shared_ptr<StateMachine> singleCyleSM();
+  static std::shared_ptr<StateMachine> singleCycleSM();
 
 
   /**
@@ -302,6 +308,14 @@ public:
 
   virtual std::expected<bool, std::string> changeMode(ModeType mode);
 
+  virtual std::expected<bool, std::string> changeState(TransitionCmd mode);
+
+  std::function<void(State value, QString name)> on_state_changed = [](packml_sm::State value, QString name){
+      std::cout << "Default callback; State changed to: " << name.toStdString() << "(" << value << ")" << std::endl;
+    };
+  std::function<void(ModeType value)> on_mode_changed = [](packml_sm::ModeType value) {
+      std::cout << "Default callback; Mode changed to: " << value << std::endl;
+    };
 
   /**
   * @brief Class destructor

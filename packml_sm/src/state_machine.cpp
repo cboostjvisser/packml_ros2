@@ -216,10 +216,10 @@ bool StateMachine::deactivate() {
 }
 
 
-std::shared_ptr<StateMachine> StateMachine::singleCyleSM() {
+std::shared_ptr<StateMachine> StateMachine::singleCycleSM() {
   auto SS = std::make_shared<SingleCycle>();
   SS->init();
-  SS->changeMode(ModeType::MANUAL);
+  // SS->changeMode(ModeType::MANUAL);
   return SS;
   // return std::shared_ptr<StateMachine>(new SingleCycle());
 }
@@ -227,7 +227,7 @@ std::shared_ptr<StateMachine> StateMachine::singleCyleSM() {
 std::shared_ptr<StateMachine> StateMachine::continuousCycleSM() {
   auto CS = std::make_shared<ContinuousCycle>();
   CS->init();
-  CS->changeMode(ModeType::MANUAL);
+  // CS->changeMode(ModeType::MANUAL);
   return CS;
   // return std::shared_ptr<StateMachine>(new ContinuousCycle());
 }
@@ -254,7 +254,8 @@ StateMachine::StateMachine() : gen(std::make_shared<StatesGenerator>()) {
   abortable_ = PackmlSuperState::Abortable();
   stoppable_ = PackmlSuperState::Stoppable(abortable_);
 
-  // printf("Constructiong acting/wait states\n");
+  // printf("Constructing acting/wait states\n");
+  // TODO: These are unused, replaced by statesgenerator
   held_ = WaitState::Held(stoppable_);
   idle_ = WaitState::Idle(stoppable_);
   complete_ = WaitState::Complete(stoppable_);
@@ -319,17 +320,18 @@ StateMachine::StateMachine() : gen(std::make_shared<StatesGenerator>()) {
   sm_internal_.addState(aborting_);
 }
 
+// Callback from QT state machine when state changed
 void StateMachine::setState(State value, QString name) {
   std::string nameUtf = name.toStdString();
   std::cout << "State changed(event) to: " << nameUtf << "(" << value << ")"
             << std::endl;
   state_value_ = value;
   state_name_ = name;
-  emit stateChanged(value, name);
+  on_state_changed(value, name);
+  // emit stateChanged(value, name);
 }
 
 bool StateMachine::setExecute(std::function<int()> execute_method) {
-
   printf("Initializing state machine with EXECUTE function pointer\n");
   return execute_->setOperationMethod(execute_method);
 }
@@ -339,8 +341,69 @@ bool StateMachine::setResetting(std::function<int()> resetting_method) {
   return resetting_->setOperationMethod(resetting_method);
 }
 
+
+// Change state triggers asynchronous switching of state machine. If successful it will call callback on_state_changed
+std::expected<bool, std::string> StateMachine::changeState(TransitionCmd command)
+{
+  bool command_rtn = false;
+  bool command_valid = true;
+  std::string error_message;
+
+  std::stringstream ss;
+  std::cout << "Evaluating transition request command: " << command << std::endl;
+
+  switch (command) {
+    case TransitionCmd::ABORT:
+      command_rtn = abort();
+      break;
+    case  TransitionCmd::STOP:
+      command_rtn = stop();
+      break;
+    case TransitionCmd::CLEAR:
+      command_rtn = clear();
+      break;
+    case TransitionCmd::HOLD:
+      command_rtn = hold();
+      break;
+    case TransitionCmd::RESET:
+      command_rtn = reset();
+      break;
+    case TransitionCmd::START:
+      command_rtn = start();
+      break;
+    case TransitionCmd::SUSPEND:
+      command_rtn = suspend();
+      break;
+    case TransitionCmd::UNHOLD:
+      command_rtn = unhold();
+      break;
+    case TransitionCmd::UNSUSPEND:
+      command_rtn = unsuspend();
+      break;
+    default:
+      command_valid = false;
+      break;
+  }
+
+  if (!command_valid) {
+    error_message = "Invalid transition request command: " + to_string(command);
+    std::cout << error_message << std::endl;
+    return std::unexpected<std::string>(error_message);
+  }
+
+  if (!command_rtn) {
+    error_message =  "Transition command failed: " + to_string(command);
+    std::cout << error_message << std::endl;
+    return std::unexpected<std::string>(error_message);
+  }
+
+  return command_valid;
+}
+
+
 std::expected<bool, std::string> StateMachine::changeMode(ModeType mode)
 {
+  // TODO: define available states elsewhere
   StatesGenerator::AvailableStates avail{
     {State::ABORTING, true},
     {State::ABORTED, true},
@@ -386,9 +449,15 @@ std::expected<bool, std::string> StateMachine::changeMode(ModeType mode)
     };
   }
 
+  // TODO: Mode should have reference to ModeType?
   StatesGenerator::Mode mode1 = StatesGenerator::Mode(to_string(mode), avail);
 
-  return gen->mode_switcher(shared_from_this(), mode1);
+  auto return_val = gen->mode_switcher(shared_from_this(), mode1);
+
+  if (return_val.has_value()) {
+    on_mode_changed(mode);
+  }
+  return return_val;
 }
 
 bool StateMachine::_start() {     sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::start());     return sm_internal_.prom.get_future().get(); }
@@ -457,7 +526,8 @@ ContinuousCycle::ContinuousCycle() {
 void ContinuousCycle::init(){
   gen->generate_all_packml_states(shared_from_this());
   // Add parent states to state machine
-  sm_internal_.addState(gen->states["Abortable"]);
+  // All other states are added 'automatically' because they are under the superstate "abortable"
+  sm_internal_.addState(gen->states[to_string(SuperState::ABORTABLE)]);
   sm_internal_.addState(gen->states[to_string(State::ABORTED)]);
   sm_internal_.addState(gen->states[to_string(State::ABORTING)]);
 
@@ -467,15 +537,15 @@ void ContinuousCycle::init(){
   auto list = gen->states[to_string(State::EXECUTE)]->transitions();
   for (const auto& item : list)
   {
-      if (item->targetState() == gen->states[to_string(State::COMPLETING)])
-      {
-        std::cout << "Found transition!" << std::endl;
-        gen->states[to_string(State::EXECUTE)]->removeTransition(item);
-        std::cout << "Removed transition!" << std::endl;
-        auto trans = gen->generate_transition(gen->states[to_string(State::EXECUTE)], StatesGenerator::TransitionType::STATE_COMPLETED);
-        gen->states[to_string(State::EXECUTE)]->addTransition(trans);
-        std::cout << "Added transition to self!" << std::endl;
-      }
+    if (item->targetState() == gen->states[to_string(State::COMPLETING)])
+    {
+      std::cout << "Found transition!" << std::endl;
+      gen->states[to_string(State::EXECUTE)]->removeTransition(item);
+      std::cout << "Removed transition!" << std::endl;
+      auto trans = gen->generate_transition(gen->states[to_string(State::EXECUTE)], StatesGenerator::TransitionType::STATE_COMPLETED);
+      gen->states[to_string(State::EXECUTE)]->addTransition(trans);
+      std::cout << "Added transition to self!" << std::endl;
+    }
   }
 
   ((ActingState*) gen->states[to_string(State::EXECUTE)])->setOperationMethod(std::bind([]()->int {std::this_thread::sleep_for(std::chrono::seconds(1));return 0;}));
@@ -538,8 +608,10 @@ SingleCycle::SingleCycle() {
   }
 void SingleCycle::init(){
   gen->generate_all_packml_states(shared_from_this());
+
   // Add parent states to state machine
-  sm_internal_.addState(gen->states["Abortable"]);
+  // All other states are added 'automatically' because they are under the superstate "abortable"
+  sm_internal_.addState(gen->states[to_string(SuperState::ABORTABLE)]);
   sm_internal_.addState(gen->states[to_string(State::ABORTED)]);
   sm_internal_.addState(gen->states[to_string(State::ABORTING)]);
 

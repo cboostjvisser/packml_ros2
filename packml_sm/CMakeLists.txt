@@ -1,17 +1,26 @@
-cmake_minimum_required(VERSION 3.5)
-project(packml_sm)
+cmake_minimum_required(VERSION 3.8)
 
-set(CMAKE_XX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++")
+# Extract package name and version
+find_package(ros_industrial_cmake_boilerplate REQUIRED)
+extract_package_metadata(pkg)
+project(
+  ${pkg_extracted_name}
+  VERSION ${pkg_extracted_version}
+  LANGUAGES CXX)
 
-# Default to C99
-if(NOT CMAKE_C_STANDARD)
-  set(CMAKE_C_STANDARD 99)
-endif()
+# set(CMAKE_XX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++")
 
-# Default to C++23
-if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 23)
-endif()
+# set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# # Default to C99
+# if(NOT CMAKE_C_STANDARD)
+#   set(CMAKE_C_STANDARD 99)
+# endif()
+
+# # Default to C++23
+# if(NOT CMAKE_CXX_STANDARD)
+#   set(CMAKE_CXX_STANDARD 23)
+# endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -27,10 +36,10 @@ find_package(rqt_gui_cpp REQUIRED)
 find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
 
 
-#include all directories
-include_directories(
-  include
-)
+# #include all directories
+# include_directories(
+#   include
+# )
 
 qt5_wrap_cpp(packml_sm_MOCS
   include/packml_sm/state_machine.hpp
@@ -65,15 +74,34 @@ add_library(${PROJECT_NAME} SHARED
   src/state_machine.cpp
 
   ${packml_sm_MOCS})
-ament_target_dependencies(${PROJECT_NAME} rclcpp rqt_gui_cpp Qt5)
+
+target_link_libraries(
+  ${PROJECT_NAME}
+  PUBLIC rclcpp::rclcpp
+          # ${rqt_gui_cpp_TARGETS}
+          Qt5::Core
+          Qt5::Gui)
+
+
+ament_target_dependencies(${PROJECT_NAME} PUBLIC rqt_gui_cpp)
+
+target_include_directories(
+    ${PROJECT_NAME}
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+           $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
+
+target_cxx_version(${PROJECT_NAME} PUBLIC VERSION 23)
 
 #install
-install(TARGETS ${PROJECT_NAME}
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
 
-install(DIRECTORY include/${PROJECT_NAME} DESTINATION include)
+install(
+  TARGETS ${PROJECT_NAME}
+  EXPORT ${PROJECT_NAME}-targets
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib
+  RUNTIME DESTINATION bin
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -81,18 +109,23 @@ if(BUILD_TESTING)
 
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(${PROJECT_NAME}_utest test/utest.cpp)
-  ament_target_dependencies(${PROJECT_NAME}_utest rclcpp rqt_gui_cpp Qt5)
-  target_link_libraries(${PROJECT_NAME}_utest ${PROJECT_NAME})
 
+  target_include_directories(
+      ${PROJECT_NAME}_utest
+      PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+                              $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
+
+  # ament_target_dependencies(${PROJECT_NAME}_utest rclcpp rqt_gui_cpp Qt5)
+
+  target_link_libraries(${PROJECT_NAME}_utest ${PROJECT_NAME} rclcpp::rclcpp Qt5::Core Qt5::Gui)
 endif()
-
 
 #Substituting the catkin_package () components:
 #INCLUDE_DIRS
-ament_export_include_directories(include)
+# ament_export_include_directories(include)
 #LIBRARIES
-ament_export_libraries(${PROJECT_NAME})
+# ament_export_libraries(${PROJECT_NAME})
 #CATKIN_DEPENDS
+ament_export_targets(${PROJECT_NAME}-targets HAS_LIBRARY_TARGET)
 ament_export_dependencies(rqt_gui_cpp)
-
 ament_package()

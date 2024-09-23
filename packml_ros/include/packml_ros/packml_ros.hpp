@@ -21,23 +21,22 @@
 
 #include <memory>
 #include <chrono>
-#include <packml_msgs/msg/detail/mode__struct.hpp>
-#include <packml_msgs/srv/detail/mode_change__struct.hpp>
-#include <packml_msgs/srv/detail/transition__struct.hpp>
 #include <thread>
 #include <sstream>
+#include "packml_ros/interface/packml_interface.hpp"
 #include "packml_sm/common.hpp"
 #include "packml_sm/state_machine.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "packml_msgs/srv/transition.hpp"
-#include "packml_msgs/srv/all_status.hpp"
-#include "packml_msgs/srv//mode_change.hpp"
+
+#include <packml_msgs/srv/state_change.hpp>
+#include <packml_msgs/srv/all_status.hpp>
+#include <packml_msgs/srv//mode_change.hpp>
 
 // Global variables for the node topics and services
 /**
 * @brief Variable that defines the number of state to transition to
 */
-class SMNode
+class SMNode : PackmlManagerInterface
 {
   // int command_int = 0;
 
@@ -49,7 +48,7 @@ class SMNode
   /**
   * @brief Pointer for transition service server
   */
-  rclcpp::Service<packml_msgs::srv::Transition>::SharedPtr trans_server_;
+  rclcpp::Service<packml_msgs::srv::StateChange>::SharedPtr trans_server_;
 
   /**
   * @brief Pointer for state and elapsed time status update service server
@@ -150,15 +149,32 @@ public:
   */
   explicit SMNode(rclcpp::Node::SharedPtr node)
   {
+
     // Create SM and connect to Qt components
     // Execute method runs forever until stopped
     // sm = packml_sm::StateMachine::continuousCycleSM();
-    sm = packml_sm::StateMachine::singleCyleSM();  // Execute method runs once
+    sm = packml_sm::StateMachine::singleCycleSM();  // Execute method runs once
+
+    init(node, sm);
+
+  // try
+  // {
+  //   auto set_param_result = node->set_parameter(rclcpp::Parameter("node_names", std::vector<std::string>{"hvr_node"}));
+  //   if (!set_param_result.successful)
+  //   {
+  //     throw std::runtime_error(set_param_result.reason);
+  //   }
+  // }
+  // catch (const std::runtime_error& e)
+  // {
+  //   std::cout << "Error setting parameter!";
+  // }
+
     // Needs to be calibrated with the time of the PLC
     sm->setExecute(std::bind(myExecuteMethod));
     sm->activate();
-    printf("SM created\n");
 
+    printf("SM created\n");
 
 
     auto modeRequest = [this](const std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
@@ -205,42 +221,42 @@ public:
     * @param res - response to the client
     */
     auto transRequest =
-      [this](const std::shared_ptr<packml_msgs::srv::Transition::Request> req,
-        std::shared_ptr<packml_msgs::srv::Transition::Response> res) -> void {
+      [this](const std::shared_ptr<packml_msgs::srv::StateChange::Request> req,
+        std::shared_ptr<packml_msgs::srv::StateChange::Response> res) -> void {
         bool command_rtn = false;
         bool command_valid = true;
         auto command_int = static_cast<int>(req->command);
         std::stringstream ss;
         std::cout << "Evaluating transition request command: " << command_int << std::endl;
         switch (command_int) {
-          case packml_msgs::srv::Transition::Request::ABORT:
+          case packml_msgs::srv::StateChange::Request::ABORT:
             command_rtn = sm->abort();
             break;
-          case packml_msgs::srv::Transition::Request::STOP:
+          case packml_msgs::srv::StateChange::Request::STOP:
             command_rtn = sm->stop();
             break;
-          case packml_msgs::srv::Transition::Request::CLEAR:
+          case packml_msgs::srv::StateChange::Request::CLEAR:
             command_rtn = sm->clear();
             break;
-          case packml_msgs::srv::Transition::Request::HOLD:
+          case packml_msgs::srv::StateChange::Request::HOLD:
             command_rtn = sm->hold();
             break;
-          case packml_msgs::srv::Transition::Request::RESET:
+          case packml_msgs::srv::StateChange::Request::RESET:
             command_rtn = sm->reset();
             break;
-          case packml_msgs::srv::Transition::Request::START:
+          case packml_msgs::srv::StateChange::Request::START:
             command_rtn = sm->start();
             break;
-          // case packml_msgs::srv::Transition::Request::STOP:
+          // case packml_msgs::srv::StateChange::Request::STOP:
           //   command_rtn = sm->stop();
           //   break;
-          case packml_msgs::srv::Transition::Request::SUSPEND:
+          case packml_msgs::srv::StateChange::Request::SUSPEND:
             command_rtn = sm->suspend();
             break;
-          case packml_msgs::srv::Transition::Request::UNHOLD:
+          case packml_msgs::srv::StateChange::Request::UNHOLD:
             command_rtn = sm->unhold();
             break;
-          case packml_msgs::srv::Transition::Request::UNSUSPEND:
+          case packml_msgs::srv::StateChange::Request::UNSUSPEND:
             command_rtn = sm->unsuspend();
             break;
           default:
@@ -385,15 +401,9 @@ public:
         res->t_complete_state = complete_state_t;
       };
     // Create service to control the execution of the SM from RViz GUI
-    trans_server_ = node->create_service<packml_msgs::srv::Transition>(
-      "transition",
-      transRequest);
-    status_server_ = node->create_service<packml_msgs::srv::AllStatus>(
-      "allStatus",
-      statusRequest);
-    mode_server_ = node->create_service<packml_msgs::srv::ModeChange>(
-      "modeChange",
-      modeRequest);
+    trans_server_ = node->create_service<packml_msgs::srv::StateChange>("~/transition", transRequest);
+    status_server_ = node->create_service<packml_msgs::srv::AllStatus>("~/allStatus", statusRequest);
+    mode_server_ = node->create_service<packml_msgs::srv::ModeChange>("~/modeChange", modeRequest);
   }
 
   /**

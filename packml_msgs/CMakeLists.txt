@@ -1,6 +1,9 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.8)
 
-project(packml_msgs)
+# Extract package name and version
+find_package(ros_industrial_cmake_boilerplate REQUIRED)
+extract_package_metadata(pkg)
+project(${pkg_extracted_name} VERSION ${pkg_extracted_version} LANGUAGES C CXX)
 
 # set(CMAKE_XX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++")
 
@@ -9,11 +12,11 @@ project(packml_msgs)
 #   set(CMAKE_C_STANDARD 99)
 # endif()
 
-# Default to C++17
-if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 17)
-  set(CMAKE_CXX_STANDARD_REQUIRED ON)
-endif()
+# # Default to C++20
+# if(NOT CMAKE_CXX_STANDARD)
+#   set(CMAKE_CXX_STANDARD 20)
+#   set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# endif()
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -21,7 +24,7 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
-find_package(builtin_interfaces REQUIRED)
+# find_package(builtin_interfaces REQUIRED)
 # find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -30,10 +33,13 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Status.msg"
   "msg/AllTimes.msg"
   "msg/AllStatus.msg"
+
   "srv/ModeChange.srv"
-  "srv/Transition.srv"
+  "srv/ModeTransition.srv"
+  "srv/StateChange.srv"
+  "srv/StateTransition.srv"
   "srv/AllStatus.srv"
-  DEPENDENCIES builtin_interfaces
+  # DEPENDENCIES builtin_interfaces
 )
 
 if(BUILD_TESTING)

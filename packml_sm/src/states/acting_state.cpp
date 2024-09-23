@@ -58,8 +58,7 @@ void ActingState::operation()
       sc = new ErrorEvent(error_code);
     }
   } else {
-    std::cout << "Default operation, delaying " << delay_ms << " ms" <<
-      std::endl;
+    std::cout << "Default operation, delaying " << delay_ms << " ms" << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(static_cast<int>(delay_ms / 1000.0)));
     printf("Operation delay complete\n");
     sc = new StateCompleteEvent();

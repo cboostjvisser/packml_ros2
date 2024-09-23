@@ -18,8 +18,12 @@
 #include <gtest/gtest.h>
 #include <memory>
 #include <chrono>
-#include "packml_ros/packml_ros.hpp"
+
 #include <rclcpp/executor.hpp>
+
+#include "packml_ros/packml_ros.hpp"
+#include "packml_msgs/srv/state_change.hpp"
+
 using ::testing::Return;
 
 class MockSMNode : public SMNode
@@ -43,9 +47,9 @@ TEST(Packml_ros, constructor_test)
 TEST(Packml_ros, test_transRequest_commands)
 {
   auto node = rclcpp::Node::make_shared("packml_ros_node");
-  auto transition_client_ = node->create_client<packml_msgs::srv::Transition>("transition");
+  auto transition_client_ = node->create_client<packml_msgs::srv::StateChange>("transition");
   SMNode thenode(node);
-  auto trans = std::make_shared<packml_msgs::srv::Transition::Request>();
+  auto trans = std::make_shared<packml_msgs::srv::StateChange::Request>();
   trans->command = 1;
   auto result_future = transition_client_->async_send_request(trans);
   bool check1 = false;

@@ -1,0 +1,14 @@
+# Trigger a Mode change on a PackML Node.
+# The response is returned when the Mode has changed on the node
+
+Mode mode
+
+---
+# PackML Node Response
+bool success    # True if Mode has been changed
+int8 error_code # Error code if Mode could not be changed
+string message  # Message for display (only for human reading)
+
+# Error Codes
+int8 SUCCESS = 1
+int8 INVALID_MODE_REQUEST = -1

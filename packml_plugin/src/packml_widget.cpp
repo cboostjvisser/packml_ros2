@@ -18,10 +18,12 @@
 
 #include <chrono>
 #include <iomanip>
+#include <packml_msgs/srv/state_change.hpp>
 #include <sstream>
 #include <memory>
 #include <string>
 #include "packml_plugin/packml_widget.hpp"
+
 PackmlWidget::PackmlWidget(QWidget * parent)
 : QWidget(parent)
 {
@@ -40,8 +42,9 @@ PackmlWidget::PackmlWidget(QWidget * parent)
   connect(ui_->suspend_button, SIGNAL(clicked()), this, SLOT(onSuspendButton()));
   connect(ui_->stop_button, SIGNAL(clicked()), this, SLOT(onStopButton()));
   // Interface with packml_ros_node simulator and PLC driver
-  transition_client_ = nh_->create_client<packml_msgs::srv::Transition>("transition");
-  status_client_ = nh_->create_client<packml_msgs::srv::AllStatus>("allStatus");
+  // TODO: check if these topics still exist
+  transition_client_ = nh_->create_client<packml_msgs::srv::StateChange>("/packml_ros_node/transition");
+  status_client_ = nh_->create_client<packml_msgs::srv::AllStatus>("/packml_ros_node/allStatus");
 }
 
 void PackmlWidget::timerEvent(QTimerEvent * /*event*/)  // NOLINT(readability/casting)
@@ -63,64 +66,64 @@ void PackmlWidget::timerEvent(QTimerEvent * /*event*/)  // NOLINT(readability/ca
 
 void PackmlWidget::onStartButton()
 {
-  auto trans = std::make_shared<packml_msgs::srv::Transition::Request>();
-  trans->command = 2;
+  auto trans = std::make_shared<packml_msgs::srv::StateChange::Request>();
+  trans->command = packml_msgs::srv::StateChange::Request::START;
   transition_client_->async_send_request(trans);
 }
 
 void PackmlWidget::onAbortButton()
 {
-  auto trans = std::make_shared<packml_msgs::srv::Transition::Request>();
-  trans->command = 5;
+  auto trans = std::make_shared<packml_msgs::srv::StateChange::Request>();
+  trans->command = packml_msgs::srv::StateChange::Request::ABORT;
   transition_client_->async_send_request(trans);
 }
 
 void PackmlWidget::onClearButton()
 {
-  auto trans = std::make_shared<packml_msgs::srv::Transition::Request>();
-  trans->command = 1;
+  auto trans = std::make_shared<packml_msgs::srv::StateChange::Request>();
+  trans->command = packml_msgs::srv::StateChange::Request::CLEAR;
   transition_client_->async_send_request(trans);
 }
 
 void PackmlWidget::onHoldButton()
 {
-  auto trans = std::make_shared<packml_msgs::srv::Transition::Request>();
-  trans->command = 4;
+  auto trans = std::make_shared<packml_msgs::srv::StateChange::Request>();
+  trans->command = packml_msgs::srv::StateChange::Request::HOLD;
   transition_client_->async_send_request(trans);
 }
 
 void PackmlWidget::onResetButton()
 {
-  auto trans = std::make_shared<packml_msgs::srv::Transition::Request>();
-  trans->command = 6;
+  auto trans = std::make_shared<packml_msgs::srv::StateChange::Request>();
+  trans->command = packml_msgs::srv::StateChange::Request::RESET;
   transition_client_->async_send_request(trans);
 }
 
 void PackmlWidget::onUnsuspendButton()
 {
-  auto trans = std::make_shared<packml_msgs::srv::Transition::Request>();
-  trans->command = 101;
+  auto trans = std::make_shared<packml_msgs::srv::StateChange::Request>();
+  trans->command = packml_msgs::srv::StateChange::Request::UNSUSPEND;
   transition_client_->async_send_request(trans);
 }
 
 void PackmlWidget::onUnholdButton()
 {
-  auto trans = std::make_shared<packml_msgs::srv::Transition::Request>();
-  trans->command = 102;
+  auto trans = std::make_shared<packml_msgs::srv::StateChange::Request>();
+  trans->command = packml_msgs::srv::StateChange::Request::UNHOLD;
   transition_client_->async_send_request(trans);
 }
 
 void PackmlWidget::onSuspendButton()
 {
-  auto trans = std::make_shared<packml_msgs::srv::Transition::Request>();
-  trans->command = 100;
+  auto trans = std::make_shared<packml_msgs::srv::StateChange::Request>();
+  trans->command = packml_msgs::srv::StateChange::Request::SUSPEND;
   transition_client_->async_send_request(trans);
 }
 
 void PackmlWidget::onStopButton()
 {
-  auto trans = std::make_shared<packml_msgs::srv::Transition::Request>();
-  trans->command = 3;
+  auto trans = std::make_shared<packml_msgs::srv::StateChange::Request>();
+  trans->command = packml_msgs::srv::StateChange::Request::STOP;
   transition_client_->async_send_request(trans);
 }
 

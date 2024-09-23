@@ -26,15 +26,15 @@ struct PackmlSuperState : public PackmlState
 public:
   static PackmlSuperState * Abortable()
   {
-    return new PackmlSuperState(SuperState::ABORTABLE, TransitionCmd::ABORT, "Abortable");
+    return new PackmlSuperState(SuperState::ABORTABLE, TransitionCmd::ABORT);
   }
   static PackmlSuperState * Stoppable(QState * superstate)
   {
-    return new PackmlSuperState(SuperState::STOPPABLE, TransitionCmd::STOP, "Stoppable", superstate);
+    return new PackmlSuperState(SuperState::STOPPABLE, TransitionCmd::STOP, superstate);
   }
 
-  PackmlSuperState(SuperState state_value, TransitionCmd transition_command, QString name_value, QState * super_state = nullptr)
-    : PackmlState(State::UNDEFINED, name_value, super_state), transition_command(transition_command) {}
+  PackmlSuperState(SuperState state_value, TransitionCmd transition_command, QState * super_state = nullptr)
+    : PackmlState(State::UNDEFINED, to_string(state_value).c_str(), super_state), transition_command(transition_command) {}
 
 private:
   TransitionCmd transition_command;

@@ -19,12 +19,8 @@
 
 #include <chrono>
 #include <thread>
-#include <sstream>
-#include "packml_sm/state_machine.hpp"
-#include "rclcpp/rclcpp.hpp"
-#include "packml_msgs/srv/transition.hpp"
-#include "packml_msgs/srv/all_status.hpp"
-#include "packml_ros/packml_ros.hpp"
+#include "packml_ros/packml_ros-new.hpp"
+// #include "packml_ros/packml_ros.hpp"
 
 
 int main(int argc, char * argv[])
@@ -39,7 +35,7 @@ int main(int argc, char * argv[])
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
   thr.detach();
-  SMNode thenode(node);
+  SMNode_new thenode(node);
   rclcpp::spin(node);
   return 0;
 }

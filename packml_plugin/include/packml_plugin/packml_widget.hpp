@@ -26,7 +26,7 @@
 
 #include "./ui_packml.h"  // UI layout and components
 #include "rclcpp/rclcpp.hpp"  // ROS 2 node
-#include "packml_msgs/srv/transition.hpp"  // Datatypes for packml topics and services
+#include "packml_msgs/srv/state_change.hpp"  // Datatypes for packml topics and services
 #include "packml_msgs/srv/all_status.hpp"
 
 
@@ -81,7 +81,7 @@ public:
   /**
   * @brief Client to request transitions on the state machine from the real PLC
   */
-  rclcpp::Client<packml_msgs::srv::Transition>::SharedPtr transition_client_;
+  rclcpp::Client<packml_msgs::srv::StateChange>::SharedPtr transition_client_;
 
 
   /**
