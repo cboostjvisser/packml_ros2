@@ -1,0 +1,19 @@
+CompileFlags:
+  # https://www.reddit.com/r/cpp_questions/comments/1bblgaw/comment/l12gy8i
+  Add: [-D__cpp_concepts=202002L]
+  CompilationDatabase: Ancestors
+Completion:
+  AllScopes: Yes
+Diagnostics:
+  ClangTidy:
+    FastCheckFilter: Strict
+  UnusedIncludes: Strict
+  MissingIncludes: None
+Index:
+  Background: Build
+  StandardLibrary: Yes
+InlayHints:
+  Designators: Yes
+  Enabled: Yes
+  ParameterNames: No
+  DeducedTypes: Yes
