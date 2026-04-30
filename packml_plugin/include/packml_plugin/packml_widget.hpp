@@ -23,9 +23,11 @@
 #include <QtWidgets>
 
 #include <memory>
+#include <mutex>
 
 #include "./ui_packml.h"  // UI layout and components
 #include "rclcpp/rclcpp.hpp"  // ROS 2 node
+#include "packml_msgs/msg/status.hpp"
 #include "packml_msgs/srv/state_change.hpp"  // Datatypes for packml topics and services
 #include "packml_msgs/srv/all_status.hpp"
 
@@ -44,12 +46,15 @@ public:
   */
   explicit PackmlWidget(QWidget * parent = 0);
 
+  void setServiceNames(const std::string & transition_service, const std::string & status_service);
+  void setStatusSource(const std::string & status_source, const std::string & status_topic);
 
   /**
   * @brief Destructor for the widget object
   */
-  ~PackmlWidget() override = default;
-
+  ~PackmlWidget() override {
+    if (ros_spin_thread_.joinable()) ros_spin_thread_.join();
+  }
 
   /**
   * @brief Node for the Widget or RViz plugin
@@ -88,6 +93,12 @@ public:
   * @brief Client to request an update on the real PLC's state
   */
   rclcpp::Client<packml_msgs::srv::AllStatus>::SharedPtr status_client_;
+  rclcpp::Subscription<packml_msgs::msg::Status>::SharedPtr status_sub_;
+
+  // Cached latest status snapshot from topic mode for UI/state updates.
+  std::shared_ptr<packml_msgs::srv::AllStatus::Response> topic_status_cache_;
+  int8_t topic_current_state_ = 0;
+  std::mutex topic_cache_mutex_;
 
 
   /**
@@ -102,59 +113,58 @@ public Q_SLOTS:
   */
   void onStartButton();
 
-
   /**
   * @brief Function that calls for a Transition request in the state machine when the button is pressed
   */
   void onAbortButton();
-
 
   /**
   * @brief Function that calls for a Transition request in the state machine when the button is pressed
   */
   void onClearButton();
 
-
   /**
   * @brief Function that calls for a Transition request in the state machine when the button is pressed
   */
   void onHoldButton();
-
 
   /**
   * @brief Function that calls for a Transition request in the state machine when the button is pressed
   */
   void onResetButton();
 
-
   /**
   * @brief Function that calls for a Transition request in the state machine when the button is pressed
   */
   void onUnsuspendButton();
-
 
   /**
   * @brief Function that calls for a Transition request in the state machine when the button is pressed
   */
   void onUnholdButton();
 
-
   /**
   * @brief Function that calls for a Transition request in the state machine when the button is pressed
   */
   void onSuspendButton();
-
 
   /**
   * @brief Function that calls for a Transition request in the state machine when the button is pressed
   */
   void onStopButton();
 
+private:
+  // Internal polling infrastructure for periodic status refresh.
+  QTimer * poll_timer_ = nullptr;
+  std::thread ros_spin_thread_;
+  void pollStatusAsync();
 
   /**
-  * @brief Function called by a QTimer that triggers the update of the state machine state and elapsed time
+  * @brief Helper to send a PackML state transition command to the backend.
+  * @param command The PackML command (from packml_msgs::srv::StateChange::Request)
+  * This function waits for the transition service, sends the command, and disables all buttons briefly.
   */
-  void timerEvent(QTimerEvent *) override;
+  void sendTransitionCommand(int command);
 };
 
 #endif  // PACKML_PLUGIN__PACKML_WIDGET_HPP_

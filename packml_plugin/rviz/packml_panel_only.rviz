@@ -1,0 +1,27 @@
+# Minimal RViz panel config for PackML plugin.
+#
+# Supported panel keys (all optional, defaults shown):
+# - transition_service: /transition
+#     Service used for command requests (packml_msgs/srv/StateChange).
+#     Typical ROS-native demo value: /packml_ros_node/changeState
+# - status_service: /allStatus
+#      Service used for status polling (packml_msgs/srv/AllStatus).
+#     Typical ROS-native demo value: /packml_ros_node/allStatus
+# - status_source: service
+#     One of: service | topic
+#     service => poll status_service
+#     topic   => subscribe to status_topic
+# - status_topic: /packml_status
+#     Topic used when status_source=topic (packml_msgs/msg/Status)
+#
+# TODO: Change PLC demo to subscriber, then remove topic/service option
+
+Panels:
+  - Class: packml_plugins/packml_plugin
+    Name: PackmlPlugin
+
+    # Optional overrides (uncomment and adapt for your setup):
+    # transition_service: /transition
+    # status_service: /allStatus
+    # status_source: service
+    # status_topic: /packml_status

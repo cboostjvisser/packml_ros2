@@ -79,6 +79,7 @@ pluginlib_export_plugin_description_file(rviz_common plugin_description.xml)
 
 #install
 install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
+install(DIRECTORY rviz DESTINATION share/${PROJECT_NAME})
 
 install(TARGETS ${PROJECT_NAME}
   EXPORT ${PROJECT_NAME}

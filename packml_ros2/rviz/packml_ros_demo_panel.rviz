@@ -1,0 +1,13 @@
+# RViz config for PackML ROS demo
+
+Panels:
+  - Class: packml_plugins/packml_plugin
+    Name: PackmlPlugin
+
+    # Packml_ros uses a different service topic
+    transition_service: /packml_ros_node/changeState
+
+    # TODO: Change PLC demo to subscriber, then remove topic/service option
+    # For packml_ros we changed from allstatus service to packm_status topic.
+    status_source: topic
+    status_topic: /packml_status
