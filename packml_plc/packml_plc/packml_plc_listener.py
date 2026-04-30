@@ -17,6 +17,7 @@
 #
 
 import threading
+import time
 
 from opcua import Client
 from packml_msgs.srv import AllStatus
@@ -48,7 +49,9 @@ thee = threading.Event()
 class HelloClient:
     """This class creates an OPCUA client to connect to the PLC server."""
 
-    def __init__(self, endpoint):
+    def __init__(self, endpoint=None):
+        if endpoint is None:
+            endpoint = 'opc.tcp://127.0.0.1:4840/freeopcua/server/'
         self.client = Client(endpoint)
 
     def __enter__(self):
@@ -60,10 +63,17 @@ class HelloClient:
 
 
 class DriverListener(Node):
-    """This class updates the state machine displayed in the GUI."""
+
+    """
+    This class mirrors the PLC's PackML state in ROS2 (PLC Master, ROS2 Slave).
+    It reads the PLC's PackML state tags via OPC UA and updates the ROS2 node state accordingly.
+    Only one state should be active at a time, matching the state order and logic defined in the packml_sm library.
+    """
 
     def __init__(self):
         super().__init__('driver_listener')
+        self.declare_parameter('opcua_endpoint', 'opc.tcp://127.0.0.1:4840/freeopcua/server/')
+        self.opcua_endpoint = self.get_parameter('opcua_endpoint').get_parameter_value().string_value
         self.srv = self.create_service(AllStatus, 'allStatus', self.send_data)
 
     def send_data(self, req, res):
@@ -121,140 +131,126 @@ class DriverListener(Node):
         res.t_stopping_state = time_stopping
         return res
 
+# Order must match packml_sm library and AllStatus message
+PACKML_STATE_NAMES = [
+    "Stopped", "Idle", "Starting", "Execute", "Completing", "Complete",
+    "Clearing", "Suspended", "Aborting", "Aborted", "Holding", "Held",
+    "Unholding", "Suspending", "Unsuspending", "Resetting", "Stopping"
+]
 
-def plc_listener(e):
-    """Create the connection with the PLC, monitors the state in its state machine."""
-    # Resetting the time counters every time the connection between the PLC and ROS is initialized
-    global time_stopped
-    time_stopped = 0.0
-    global time_idle
-    time_idle = 0.0
-    global time_starting
-    time_starting = 0.0
-    global time_execute
-    time_execute = 0.0
-    global time_completing
-    time_completing = 0.0
-    global time_complete
-    time_complete = 0.0
-    global time_clearing
-    time_clearing = 0.0
-    global time_suspended
-    time_suspended = 0.0
-    global time_aborting
-    time_aborting = 0.0
-    global time_aborted
-    time_aborted = 0.0
-    global time_holding
-    time_holding = 0.0
-    global time_held
-    time_held = 0.0
-    global time_unholding
-    time_unholding = 0.0
-    global time_suspending
-    time_suspending = 0.0
-    global time_unsuspending
-    time_unsuspending = 0.0
-    global time_resetting
-    time_resetting = 0.0
-    global time_stopping
-    time_stopping = 0.0
+# Default PLC endpoint
+# TODO: This is stored from original version, but could be removed?
+DEFAULT_PLC_ENDPOINT = 'opc.tcp://192.168.125.2:4840/freeopcua/server/'
+
+def plc_listener(e, endpoint=None):
+    """Create the connection with the PLC, monitors the state in its state machine.
+
+    Args:
+        e: threading.Event to signal shutdown
+        endpoint: OPC UA endpoint URL (optional, for testing with mock PLC)
+    """
+    if endpoint is None:
+        endpoint = DEFAULT_PLC_ENDPOINT
+
+    # Reset time counters
+    global time_stopped, time_idle, time_starting, time_execute, time_completing
+    global time_complete, time_clearing, time_suspended, time_aborting, time_aborted
+    global time_holding, time_held, time_unholding, time_suspending, time_unsuspending
+    global time_resetting, time_stopping
+    time_stopped = time_idle = time_starting = time_execute = time_completing = 0.0
+    time_complete = time_clearing = time_suspended = time_aborting = time_aborted = 0.0
+    time_holding = time_held = time_unholding = time_suspending = time_unsuspending = 0.0
+    time_resetting = time_stopping = 0.0
+
     # Open a connection with the PLC
-    with HelloClient('opc.tcp://192.168.125.2:4840/freeopcua/server/') as client:
-        try:
-            while not e.isSet():
-                stopped_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                            '\"State\".\"Stopped\"')
-                idle_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                         '\"State\".\"Idle\"')
-                starting_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                             '\"State\".\"Starting\"')
-                execute_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                            '\"State\".\"Execute\"')
-                completing_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                               '\"State\".\"Completing\"')
-                complete_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                             '\"State\".\"Complete\"')
-                clearing_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                             '\"State\".\"Clearing\"')
-                suspended_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                              '\"State\".\"Suspended\"')
-                aborting_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                             '\"State\".\"Aborting\"')
-                aborted_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                            '\"State\".\"Aborted\"')
-                holding_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                            '\"State\".\"Holding\"')
-                held_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                         '\"State\".\"Held\"')
-                unholding_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                              '\"State\".\"Unholding\"')
-                suspending_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                               '\"State\".\"Suspending\"')
-                unsuspending_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                                 '\"State\".\"Unsuspending\"')
-                resetting_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                              '\"State\".\"Resetting\"')
-                stopping_0 = client.get_node('ns=3;s=\"PackML_Status\".\"Sts\".' +
-                                             '\"State\".\"Stopping\"')
-                # Checking and updating the time counters for each state,
-                # approximated to 1 decimal place.
-                global newvals
-                newvals = [stopped_0.get_value(), idle_0.get_value(),
-                           starting_0.get_value(), execute_0.get_value(),
-                           completing_0.get_value(), complete_0.get_value(),
-                           clearing_0.get_value(), suspended_0.get_value(),
-                           aborting_0.get_value(), aborted_0.get_value(),
-                           holding_0.get_value(), held_0.get_value(),
-                           unholding_0.get_value(), suspending_0.get_value(),
-                           unsuspending_0.get_value(), resetting_0.get_value(),
-                           stopping_0.get_value()]
-                if newvals[0]:
-                    time_stopped = time_stopped + 0.1
-                if newvals[1]:
-                    time_idle = time_idle + 0.1
-                if newvals[2]:
-                    time_starting = time_starting + 0.1
-                if newvals[3]:
-                    time_execute = time_execute + 0.1
-                if newvals[4]:
-                    time_completing = time_completing + 0.1
-                if newvals[5]:
-                    time_complete = time_complete + 0.1
-                if newvals[6]:
-                    time_clearing = time_clearing + 0.1
-                if newvals[7]:
-                    time_suspended = time_suspended + 0.1
-                if newvals[8]:
-                    time_aborting = time_aborting + 0.1
-                if newvals[9]:
-                    time_aborted = time_aborted + 0.1
-                if newvals[10]:
-                    time_holding = time_holding + 0.1
-                if newvals[11]:
-                    time_held = time_held + 0.1
-                if newvals[12]:
-                    time_unholding = time_unholding + 0.1
-                if newvals[13]:
-                    time_suspending = time_suspending + 0.1
-                if newvals[14]:
-                    time_unsuspending = time_unsuspending + 0.1
-                if newvals[15]:
-                    time_resetting = time_resetting + 0.1
-                if newvals[16]:
-                    time_stopping = time_stopping + 0.1
-        except KeyboardInterrupt:
-            pass
-            client.disconnect()
+    import rclpy
+    node = rclpy.logging.get_logger("packml_plc_listener")
+    node.info(f"Attempting OPC UA connection to endpoint: {endpoint}")
+    try:
+        with HelloClient(endpoint) as client:
+            node.info(f"Connected to OPC UA endpoint: {endpoint}")
+            try:
+                while not e.is_set():
+                    node_values = []
+                    for state in PACKML_STATE_NAMES:
+                        try:
+                            # Original ID: 'ns=3;s=\"PackML_Status\".\"Sts\".' + '\"State\".\"Suspended\"'
+                            node_obj = client.get_node(
+                                f'ns=3;s="PackML_Status"."EM00"."Unit"."{state}"'
+                            )
+                            value = node_obj.get_value()
+                        except Exception as node_exc:
+                            node.error(f"Error reading state '{state}': {node_exc}")
+                            value = False
+                        node_values.append(value)
+                    global newvals
+                    newvals = node_values
+                    active_count = sum(1 for v in newvals if v)
+                    if active_count > 1:
+                        active_states = [
+                            (PACKML_STATE_NAMES[i], v)
+                            for i, v in enumerate(newvals) if v
+                        ]
+                        node.warn(f"Warning: Multiple active states: {active_states}")
+                    elif active_count == 0:
+                        node.warn("Warning: No active state detected!")
+                    if newvals[0]:
+                        time_stopped += 0.1
+                    if newvals[1]:
+                        time_idle += 0.1
+                    if newvals[2]:
+                        time_starting += 0.1
+                    if newvals[3]:
+                        time_execute += 0.1
+                    if newvals[4]:
+                        time_completing += 0.1
+                    if newvals[5]:
+                        time_complete += 0.1
+                    if newvals[6]:
+                        time_clearing += 0.1
+                    if newvals[7]:
+                        time_suspended += 0.1
+                    if newvals[8]:
+                        time_aborting += 0.1
+                    if newvals[9]:
+                        time_aborted += 0.1
+                    if newvals[10]:
+                        time_holding += 0.1
+                    if newvals[11]:
+                        time_held += 0.1
+                    if newvals[12]:
+                        time_unholding += 0.1
+                    if newvals[13]:
+                        time_suspending += 0.1
+                    if newvals[14]:
+                        time_unsuspending += 0.1
+                    if newvals[15]:
+                        time_resetting += 0.1
+                    if newvals[16]:
+                        time_stopping += 0.1
+                    # TODO: Instead of sleeping 0.1 and updating 0.1, update the actual time delta's
+                    time.sleep(0.1)
+            except KeyboardInterrupt:
+                node.info("KeyboardInterrupt received, shutting down listener thread.")
+            except Exception as poll_exc:
+                node.error(f"Exception in polling loop: {poll_exc}")
+    except Exception as conn_exc:
+        node.error(f"OPC UA connection failed: {conn_exc}")
 
 
 def main(args=None):
     rclpy.init(args=args)
-    # Create thread to get data from PLC
-    listener = threading.Timer(1.0, plc_listener, args=(thee,))
-    listener.start()
     driver_listener = DriverListener()
-    rclpy.spin(driver_listener)
+    # Pass the parameter value to the thread
+    # TODO: We can use ros threading here
+    listener_thread = threading.Thread(target=plc_listener, args=(thee, driver_listener.opcua_endpoint))
+    listener_thread.start()
+    try:
+        rclpy.spin(driver_listener)
+    finally:
+        # Signal polling thread to exit and wait for it
+        thee.set()
+        listener_thread.join(timeout=2)
 
 
 if __name__ == '__main__':

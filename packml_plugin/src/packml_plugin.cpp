@@ -16,19 +16,52 @@
 // limitations under the License.
 
 
-#include <pluginlib/class_list_macros.hpp>  // Plugin generation
+#include <pluginlib/class_list_macros.hpp>
 #include "packml_plugin/packml_plugin.hpp"
-#include "packml_msgs/srv/all_status.hpp"
 
 PackmlPlugin::PackmlPlugin(QWidget * parent)
-: rviz_common::Panel(parent)
+: rviz_common::Panel(parent), layout(nullptr), widget_(nullptr)
 {
-  // Brings up the GUI
   widget_ = new PackmlWidget();
-  // Panel setup in RVIZ
   layout = new QVBoxLayout(this);
   layout->addWidget(widget_);
   setLayout(layout);
-  printf("Loaded Packml Navigation panel\n");
+
+  widget_->setServiceNames(transition_service_.toStdString(), status_service_.toStdString());
+  widget_->setStatusSource(status_source_.toStdString(), status_topic_.toStdString());
 }
+
+void PackmlPlugin::load(const rviz_common::Config & config)
+{
+  rviz_common::Panel::load(config);
+
+  QString value;
+  if (config.mapGetString("transition_service", &value)) {
+    transition_service_ = value;
+  }
+  if (config.mapGetString("status_service", &value)) {
+    status_service_ = value;
+  }
+  if (config.mapGetString("status_source", &value)) {
+    status_source_ = value;
+  }
+  if (config.mapGetString("status_topic", &value)) {
+    status_topic_ = value;
+  }
+
+  if (widget_) {
+    widget_->setServiceNames(transition_service_.toStdString(), status_service_.toStdString());
+    widget_->setStatusSource(status_source_.toStdString(), status_topic_.toStdString());
+  }
+}
+
+void PackmlPlugin::save(rviz_common::Config config) const
+{
+  rviz_common::Panel::save(config);
+  config.mapSetValue("transition_service", transition_service_);
+  config.mapSetValue("status_service", status_service_);
+  config.mapSetValue("status_source", status_source_);
+  config.mapSetValue("status_topic", status_topic_);
+}
+
 PLUGINLIB_EXPORT_CLASS(PackmlPlugin, rviz_common::Panel)

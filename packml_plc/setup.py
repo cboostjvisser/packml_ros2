@@ -32,6 +32,8 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        # Install the mock PLC server script to share for easy access
+        ('share/' + package_name, ['packml_plc/mock_plc/packml_mock_plc.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
