@@ -39,6 +39,7 @@ public:
 
   State state() const {return state_;}
   const std::string name() const {return name_.toStdString();}
+  std::chrono::duration<double> cumulativeTime() const { return cummulative_time_; }
   virtual ~PackmlState() {}
 
 signals:

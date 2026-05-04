@@ -15,7 +15,7 @@
 //
 
 #include "QEvent"
-#include "rclcpp/rclcpp.hpp"
+#include "packml_sm/logging.hpp"
 #include "packml_sm/transitions/sc_transition.hpp"
 #include "packml_sm/events/sc_event.hpp"
 #include "packml_sm/states/state.hpp"
@@ -27,7 +27,7 @@ StateCompleteTransition::StateCompleteTransition(PackmlState &from,
                                                  PackmlState &to) {
   this->setTargetState(&to);
   from.addTransition(this);
-  RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Creating state complete transition from "
+  PACKML_INFO_STREAM("packml_sm", "Creating state complete transition from "
             << from.name() << " to " << to.name());
 }
 

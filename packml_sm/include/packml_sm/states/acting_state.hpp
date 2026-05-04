@@ -112,6 +112,16 @@ public:
     return true;
   }
   virtual void operation();
+  // Block until any in-flight bound function (`function_state_` future)
+  // returns.  Required at deactivate/destroy time because
+  // QStateMachine::stop() does *not* invoke onExit() on currently active
+  // states, so without this the worker thread can outlive the state machine
+  // and SIGSEGV when posting a StateCompleteEvent / ErrorEvent on a
+  // destroyed `machine()`.
+  void waitForOperationFinished()
+  {
+    function_state_.waitForFinished();
+  }
   virtual ~ActingState() {}
 
 protected:

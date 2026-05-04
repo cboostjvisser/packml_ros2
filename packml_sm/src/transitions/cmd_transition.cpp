@@ -16,7 +16,7 @@
 
 #include "QEvent"
 
-#include "rclcpp/rclcpp.hpp"
+#include "packml_sm/logging.hpp"
 #include "packml_sm/events/cmd_event.hpp"
 #include "packml_sm/transitions/cmd_transition.hpp"
 
@@ -27,7 +27,7 @@ CmdTransition::CmdTransition(const TransitionCmd &cmd_value,
     : cmd(cmd_value), name(name_value) {
   this->setTargetState(&to);
   from.addTransition(this);
-  RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Creating " << this->name.toStdString() << " transition from "
+  PACKML_INFO_STREAM("packml_sm", "Creating " << this->name.toStdString() << " transition from "
             << from.name() << " to " << to.name());
 }
 
@@ -39,7 +39,7 @@ bool CmdTransition::eventTest(QEvent *e) {
   }
   CmdEvent *se = static_cast<CmdEvent *>(e);
 
-  RCLCPP_DEBUG_STREAM(rclcpp::get_logger("packml_sm"), "Received transition command: " << se->cmd
+  PACKML_DEBUG_STREAM("packml_sm", "Received transition command: " << se->cmd
             << " on transition: " << this->name.toStdString());
 
   // call parent function to test if transition is available
@@ -56,7 +56,7 @@ bool CmdTransition::eventTest(QEvent *e) {
     return true;
   }
 
-  RCLCPP_DEBUG_STREAM(rclcpp::get_logger("packml_sm"), "Event is not for this transition");
+  PACKML_DEBUG_STREAM("packml_sm", "Event is not for this transition");
 
   e->ignore();
 

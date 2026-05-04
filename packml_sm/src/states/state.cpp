@@ -17,7 +17,7 @@
 
 #include <chrono>
 
-#include "rclcpp/rclcpp.hpp"
+#include "packml_sm/logging.hpp"
 #include "packml_sm/states/state.hpp"
 
 namespace packml_sm
@@ -25,7 +25,7 @@ namespace packml_sm
 
 void PackmlState::onEntry(QEvent * /*e*/)  // NOLINT(readability/casting)
 {
-  RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Entering state: " << name_.toUtf8().constData() << "(" << state_ << ")");
+  PACKML_INFO_STREAM("packml_sm", "Entering state: " << name_.toUtf8().constData() << "(" << state_ << ")");
   emit stateEntered(state_, name_);
   enter_time_ = std::chrono::system_clock::now();
 }
@@ -33,10 +33,10 @@ void PackmlState::onEntry(QEvent * /*e*/)  // NOLINT(readability/casting)
 
 void PackmlState::onExit(QEvent * /*e*/)  // NOLINT(readability/casting)
 {
-  RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Exiting state: " << name_.toUtf8().constData() << "(" << state_ << ")");
+  PACKML_INFO_STREAM("packml_sm", "Exiting state: " << name_.toUtf8().constData() << "(" << state_ << ")");
   exit_time_ = std::chrono::system_clock::now();
   cummulative_time_ = cummulative_time_ + (exit_time_ - enter_time_);
-  RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Updating cummulative time, for state: " << name_.toUtf8().constData() << "(" <<
+  PACKML_INFO_STREAM("packml_sm", "Updating cummulative time, for state: " << name_.toUtf8().constData() << "(" <<
     state_ << ") to: " << cummulative_time_.count());
 }
 

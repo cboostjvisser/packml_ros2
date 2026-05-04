@@ -17,6 +17,7 @@
 #pragma once
 
 #include "packml_sm/common.hpp"
+#include "packml_sm/logging.hpp"
 #include "packml_sm/state_machine.hpp"
 #include "packml_sm/states/acting_state.hpp"
 #include "packml_sm/states/state.hpp"
@@ -112,14 +113,14 @@ public:
         state1->setProperty("Available", state.second);
       }
       currentMode = mode_to_switch;
-      RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Switched mode: " << mode_to_switch.name);
+      PACKML_INFO_STREAM("packml_sm", "Switched mode: " << mode_to_switch.name);
       return true;
     }
     else
     {
       std::stringstream msg;
       msg << "Cannot switch mode in state: " << sm->getCurrentState();
-      RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_sm"), msg.str());
+      PACKML_WARN_STREAM("packml_sm", msg.str());
       return std::unexpected(msg.str());
     }
     // Cannot reach this
@@ -128,30 +129,30 @@ public:
 
   // IDLE  |-CMD Start->  Starting  |-SC->  Execute
 
-  inline void generate_all_packml_states(std::shared_ptr<StateMachine> sm) {
+  inline void generate_all_packml_states(std::shared_ptr<StateMachine> sm, int delay_ms = 200) {
     printf("Forming state machine (states + transitions)\n");
     // Create SuperState
     PackmlSuperState *abortable = PackmlSuperState::Abortable();
     PackmlSuperState *stoppable = PackmlSuperState::Stoppable(abortable);
 
     // Create Packml states
-    ActingState *Aborting = ActingState::Aborting();
+    ActingState *Aborting = ActingState::Aborting(delay_ms);
     WaitState *Aborted = WaitState::Aborted();
-    ActingState *Clearing = ActingState::Clearing(abortable);
-    ActingState *Stopping = ActingState::Stopping(abortable);
+    ActingState *Clearing = ActingState::Clearing(abortable, delay_ms);
+    ActingState *Stopping = ActingState::Stopping(abortable, delay_ms);
     WaitState *Stopped = WaitState::Stopped(abortable);
-    ActingState *Resetting = ActingState::Resetting(stoppable);
+    ActingState *Resetting = ActingState::Resetting(stoppable, delay_ms);
     WaitState *Idle = WaitState::Idle(stoppable);
-    ActingState *Starting = ActingState::Starting(stoppable);
+    ActingState *Starting = ActingState::Starting(stoppable, delay_ms);
     // Dual state; Acting and Waiting state at the same time
-    ActingState *Execute = ActingState::Execute(stoppable);
-    ActingState *Holding = ActingState::Holding(stoppable);
+    ActingState *Execute = ActingState::Execute(stoppable, delay_ms);
+    ActingState *Holding = ActingState::Holding(stoppable, delay_ms);
     WaitState *Held = WaitState::Held(stoppable);
-    ActingState *Unholding = ActingState::Unholding(stoppable);
-    ActingState *Suspending = ActingState::Suspending(stoppable);
+    ActingState *Unholding = ActingState::Unholding(stoppable, delay_ms);
+    ActingState *Suspending = ActingState::Suspending(stoppable, delay_ms);
     WaitState *Suspended = WaitState::Suspended(stoppable);
-    ActingState *Unsuspending = ActingState::Unsuspending(stoppable);
-    ActingState *Completing = ActingState::Completing(stoppable);
+    ActingState *Unsuspending = ActingState::Unsuspending(stoppable, delay_ms);
+    ActingState *Completing = ActingState::Completing(stoppable, delay_ms);
     WaitState *Complete = WaitState::Complete(stoppable);
 
     // TODO: We add abortable state because we need to add it to the state
@@ -266,7 +267,11 @@ public:
     Complete->addTransition(complete_resetting);
 
     // Set initial states of super states
-    abortable->setInitialState(Clearing);
+    // PackML mandates power-on into STOPPED.  abortable's initial substate
+    // is Stopped so the SM boots there.  Explicit transitions (e.g.
+    // ABORTED→Clearing) still target their declared substate and override
+    // the initialState setting per Qt semantics.
+    abortable->setInitialState(Stopped);
     stoppable->setInitialState(Resetting);
 
     // Don't forget to set state machine initial state, currently set elsewhere
@@ -330,7 +335,7 @@ public:
         case State::COMPLETING:
         case State::COMPLETE:
         default: {
-            RCLCPP_WARN(rclcpp::get_logger("packml_sm"), "Fell through Transition switch, returning 'No Command' transition");
+            PACKML_WARN("packml_sm", "Fell through Transition switch, returning 'No Command' transition");
             transition = new CmdTransition(TransitionCmd::NO_COMMAND, "No_Command"); // NOLINT, this is how qt works
         }
       }
@@ -353,7 +358,16 @@ public:
   inline void add_state(std::shared_ptr<StateMachine> sm, PackmlState *state) {
     if (states.find(state->name()) == states.end()) {
       states[state->name()] = state;
-      RCLCPP_DEBUG_STREAM(rclcpp::get_logger("packml_sm"), "Added state: " << state->name());
+      PACKML_DEBUG_STREAM("packml_sm", "Added state: " << state->name());
+
+      // BUGFIX: previously the `Available` QState property was unset until
+      // a `changeMode` call ran the mask through `mode_switcher`.  Until then
+      // PackmlTransition::eventTest() rejected every command because
+      // `targetState()->property("Available")` returned an invalid QVariant
+      // (->toBool() == false).  Default to `true` so that a freshly created
+      // state machine is usable without an explicit mode change; tests and
+      // applications can still narrow the mask via changeMode().
+      state->setProperty("Available", true);
 
       // auto function = std::bind(StateMachine::setState )
       // Hacky way to filter out superstates. This way we do not get events from super states.
@@ -365,7 +379,7 @@ public:
       // transition->setTargetState(state);
       // previous_state->addTransition(transition);
     } else {
-      RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_sm"), state->name() << ": Already exists");
+      PACKML_WARN_STREAM("packml_sm", state->name() << ": Already exists");
     }
   }
 

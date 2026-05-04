@@ -19,7 +19,7 @@
 #include <QEvent>
 #include <QtConcurrent/QtConcurrent>
 
-#include "rclcpp/rclcpp.hpp"
+#include "packml_sm/logging.hpp"
 #include "packml_sm/states/acting_state.hpp"
 
 #include "packml_sm/events/sc_event.hpp"
@@ -54,12 +54,12 @@ void ActingState::operation()
     if (0 == error_code) {
       sc = new StateCompleteEvent();
     } else {
-      RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_sm"), "Operational function returned error code: " << error_code);
+      PACKML_WARN_STREAM("packml_sm", "Operational function returned error code: " << error_code);
       sc = new ErrorEvent(error_code);
     }
   } else {
-    RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Default operation, delaying " << delay_ms << " ms");
-    std::this_thread::sleep_for(std::chrono::seconds(static_cast<int>(delay_ms / 1000.0)));
+    PACKML_INFO_STREAM("packml_sm", "Default operation, delaying " << delay_ms << " ms");
+    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
     printf("Operation delay complete\n");
     sc = new StateCompleteEvent();
   }

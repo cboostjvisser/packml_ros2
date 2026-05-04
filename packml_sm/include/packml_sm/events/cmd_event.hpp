@@ -16,6 +16,9 @@
 
 #pragma once
 
+#include <future>
+#include <memory>
+
 #include "QEvent"
 #include "packml_sm/common.hpp"
 
@@ -23,20 +26,20 @@ namespace packml_sm {
 static int PACKML_CMD_EVENT_TYPE = QEvent::User + 1;
 
 struct CmdEvent : public QEvent {
-  static CmdEvent *clear() { return new CmdEvent(TransitionCmd::CLEAR); }
-  static CmdEvent *start() { return new CmdEvent(TransitionCmd::START); }
-  static CmdEvent *stop() { return new CmdEvent(TransitionCmd::STOP); }
-  static CmdEvent *hold() { return new CmdEvent(TransitionCmd::HOLD); }
-  static CmdEvent *abort() { return new CmdEvent(TransitionCmd::ABORT); }
-  static CmdEvent *reset() { return new CmdEvent(TransitionCmd::RESET); }
-  // static CmdEvent *estop() { return new CmdEvent(Cmd::ESTOP); }
-  static CmdEvent *suspend() { return new CmdEvent(TransitionCmd::SUSPEND); }
-  static CmdEvent *unsuspend() { return new CmdEvent(TransitionCmd::UNSUSPEND); }
-  static CmdEvent *unhold() { return new CmdEvent(TransitionCmd::UNHOLD); }
+  static CmdEvent *clear(std::shared_ptr<std::promise<bool>> p) { return new CmdEvent(TransitionCmd::CLEAR, std::move(p)); }
+  static CmdEvent *start(std::shared_ptr<std::promise<bool>> p) { return new CmdEvent(TransitionCmd::START, std::move(p)); }
+  static CmdEvent *stop(std::shared_ptr<std::promise<bool>> p) { return new CmdEvent(TransitionCmd::STOP, std::move(p)); }
+  static CmdEvent *hold(std::shared_ptr<std::promise<bool>> p) { return new CmdEvent(TransitionCmd::HOLD, std::move(p)); }
+  static CmdEvent *abort(std::shared_ptr<std::promise<bool>> p) { return new CmdEvent(TransitionCmd::ABORT, std::move(p)); }
+  static CmdEvent *reset(std::shared_ptr<std::promise<bool>> p) { return new CmdEvent(TransitionCmd::RESET, std::move(p)); }
+  static CmdEvent *suspend(std::shared_ptr<std::promise<bool>> p) { return new CmdEvent(TransitionCmd::SUSPEND, std::move(p)); }
+  static CmdEvent *unsuspend(std::shared_ptr<std::promise<bool>> p) { return new CmdEvent(TransitionCmd::UNSUSPEND, std::move(p)); }
+  static CmdEvent *unhold(std::shared_ptr<std::promise<bool>> p) { return new CmdEvent(TransitionCmd::UNHOLD, std::move(p)); }
 
-  explicit CmdEvent(const TransitionCmd &cmd_value)
-      : QEvent(QEvent::Type(PACKML_CMD_EVENT_TYPE)), cmd(cmd_value) {}
+  CmdEvent(const TransitionCmd &cmd_value, std::shared_ptr<std::promise<bool>> p)
+      : QEvent(QEvent::Type(PACKML_CMD_EVENT_TYPE)), cmd(cmd_value), prom(std::move(p)) {}
 
   TransitionCmd cmd;
+  std::shared_ptr<std::promise<bool>> prom;
 };
 } // namespace packml_sm

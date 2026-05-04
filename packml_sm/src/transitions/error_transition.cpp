@@ -15,7 +15,7 @@
 //
 
 #include "QEvent"
-#include "rclcpp/rclcpp.hpp"
+#include "packml_sm/logging.hpp"
 #include "packml_sm/transitions/error_transition.hpp"
 #include "packml_sm/events/error_event.hpp"
 
@@ -24,7 +24,7 @@ namespace packml_sm {
 ErrorTransition::ErrorTransition(PackmlState &from, PackmlState &to) {
   this->setTargetState(&to);
   from.addTransition(this);
-  RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Creating error transition from " << from.name()
+  PACKML_INFO_STREAM("packml_sm", "Creating error transition from " << from.name()
             << " to " << to.name());
 }
 

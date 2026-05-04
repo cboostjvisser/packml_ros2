@@ -15,6 +15,11 @@
 
 #include "packml_sm/state_machine.hpp"
 
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <QThread>
+#include <QThreadPool>
+
 #include "packml_sm/common.hpp"
 #include "packml_sm/states/wait_state.hpp"
 #include "packml_sm/states_generator.hpp"
@@ -24,12 +29,14 @@
 
 // #include "packml_sm/events.hpp"
 #include "packml_sm/states/acting_state.hpp"
+#include <condition_variable>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
-#include "rclcpp/rclcpp.hpp"
+#include "packml_sm/logging.hpp"
 
 namespace packml_sm {
 
@@ -210,27 +217,94 @@ bool StateMachine::activate() {
   }
 }
 
+// Drain every ActingState owned by this state machine: block until each
+// state's bound function (`function_state_` future started in onEntry) has
+// returned.  Required because QStateMachine::stop() does NOT invoke
+// onExit() on currently active states (Qt5 documented behaviour), so the
+// QtConcurrent::run worker can outlive the SM and SIGSEGV when posting a
+// StateCompleteEvent / ErrorEvent on a destroyed `machine()`.
+//
+// Bounded only by the user's own lambda duration -- safe for arbitrarily
+// long execute / resetting / ... callbacks.
+void StateMachine::drainActingStates() {
+  if (!gen) {
+    return;
+  }
+  for (auto & kv : gen->states) {
+    if (auto * acting = dynamic_cast<ActingState *>(kv.second)) {
+      acting->waitForOperationFinished();
+    }
+  }
+}
+
 bool StateMachine::deactivate() {
   printf("Deactivating state machine\n");
+  if (!sm_internal_.isRunning()) {
+    drainActingStates();
+    return true;
+  }
+
+  // Synchronously wait for QStateMachine::stop() to take effect.  stop() is
+  // asynchronous (it posts a stop event onto the SM's event loop) and does
+  // not call onExit() on currently active states, so we cannot rely on Qt
+  // to drain ActingState futures for us.
+  std::mutex m;
+  std::condition_variable cv;
+  bool stopped_flag = false;
+  auto conn = QObject::connect(
+    &sm_internal_, &QStateMachine::stopped,
+    &sm_internal_, [&]() {
+      {
+        std::lock_guard<std::mutex> lk(m);
+        stopped_flag = true;
+      }
+      cv.notify_all();
+    },
+    Qt::DirectConnection);
   sm_internal_.stop();
-  return true;
+  {
+    std::unique_lock<std::mutex> lk(m);
+    cv.wait_for(lk, std::chrono::seconds(2), [&] { return stopped_flag; });
+  }
+  QObject::disconnect(conn);
+
+  // Now that the SM has stopped, no new ActingState future can be spawned.
+  // Drain whichever future was started by the last active ActingState
+  // before stop() arrived -- this replaces the previous fixed-time sleep
+  // and supports user-defined lambdas of any duration.
+  drainActingStates();
+  return stopped_flag;
+}
+
+StateMachine::~StateMachine() {
+  // Even if the user already called deactivate(), make
+  // sure no QtConcurrent worker is still touching us before QObject
+  // members are torn down.
+  if (sm_internal_.isRunning()) {
+    deactivate();
+  } else {
+    drainActingStates();
+  }
+  // Final safety net: even after we drained every ActingState we own, the
+  // global QtConcurrent thread pool may still hold a worker for an
+  // operation that completed but whose runner hasn't been recycled yet.
+  // A bounded wait keeps teardown predictable across rapid SM creation/
+  // destruction cycles (heavy in tests).  This call only awaits worker
+  // thread cleanup — the user lambda has already returned above.
+  QThreadPool::globalInstance()->waitForDone(100);
 }
 
 
-std::shared_ptr<StateMachine> StateMachine::singleCycleSM() {
+std::shared_ptr<StateMachine> StateMachine::singleCycleSM(int delay_ms) {
   auto SS = std::make_shared<SingleCycle>();
-  SS->init();
-  // SS->changeMode(ModeType::MANUAL);
+  SS->init(delay_ms);
   return SS;
-  // return std::shared_ptr<StateMachine>(new SingleCycle());
 }
 
-std::shared_ptr<StateMachine> StateMachine::continuousCycleSM() {
+std::shared_ptr<StateMachine> StateMachine::continuousCycleSM(int delay_ms) {
   auto CS = std::make_shared<ContinuousCycle>();
-  CS->init();
-  // CS->changeMode(ModeType::MANUAL);
+  CS->init(delay_ms);
   return CS;
-  // return std::shared_ptr<StateMachine>(new ContinuousCycle());
 }
 
 /*
@@ -251,6 +325,10 @@ std::shared_ptr<StateMachine> StateMachine::continuousCycleSM() {
 
 StateMachine::StateMachine() : gen(std::make_shared<StatesGenerator>()) {
   printf("State machine constructor\n");
+  // Hook the inner Qt state machine's ErrorEvent observer back to *this* so
+  // applications can call getLastErrorCode() after an acting state's bound
+  // function returns a non-zero error code.
+  sm_internal_.on_error_code = [this](int code) { last_error_code_ = code; };
   // printf("Constructiong super states\n");
   abortable_ = PackmlSuperState::Abortable();
   stoppable_ = PackmlSuperState::Stoppable(abortable_);
@@ -324,7 +402,7 @@ StateMachine::StateMachine() : gen(std::make_shared<StatesGenerator>()) {
 // Callback from QT state machine when state changed
 void StateMachine::setState(State value, QString name) {
   std::string nameUtf = name.toStdString();
-  RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "State changed(event) to: " << nameUtf << "(" << value << ")");
+  PACKML_INFO_STREAM("packml_sm", "State changed(event) to: " << nameUtf << "(" << value << ")");
   state_value_ = value;
   state_name_ = name;
   on_state_changed(value, name);
@@ -333,12 +411,52 @@ void StateMachine::setState(State value, QString name) {
 
 bool StateMachine::setExecute(std::function<int()> execute_method) {
   printf("Initializing state machine with EXECUTE function pointer\n");
+  // BUGFIX: previously bound `execute_method` to the legacy `execute_` member
+  // ActingState that is created in the StateMachine constructor but never
+  // wired into the actually-running state graph (the running graph is built
+  // by `gen->generate_all_packml_states`).  As a result, user-supplied
+  // execute callbacks were silently ignored and the internal default 1-second
+  // success lambda always ran.  Set the bound function on the live state.
+  if (gen) {
+    auto it = gen->states.find(to_string(State::EXECUTE));
+    if (it != gen->states.end()) {
+      if (auto * a = dynamic_cast<ActingState *>(it->second)) {
+        a->setOperationMethod(execute_method);
+      }
+    }
+  }
   return execute_->setOperationMethod(execute_method);
 }
 
 bool StateMachine::setResetting(std::function<int()> resetting_method) {
   printf("Initializing state machine with RESETTING function pointer\n");
+  // BUGFIX: same as setExecute() above -- target the live RESETTING state in
+  // gen->states, not the orphaned legacy `resetting_` member.
+  if (gen) {
+    auto it = gen->states.find(to_string(State::RESETTING));
+    if (it != gen->states.end()) {
+      if (auto * a = dynamic_cast<ActingState *>(it->second)) {
+        a->setOperationMethod(resetting_method);
+      }
+    }
+  }
   return resetting_->setOperationMethod(resetting_method);
+}
+
+bool StateMachine::setStateOperation(State state, std::function<int()> method) {
+  if (!gen) return false;
+  auto it = gen->states.find(to_string(state));
+  if (it == gen->states.end()) return false;
+  auto * acting = dynamic_cast<ActingState *>(it->second);
+  if (!acting) return false;
+  return acting->setOperationMethod(method);
+}
+
+double StateMachine::getStateCumulativeTime(State state) const {
+  if (!gen) return 0.0;
+  auto it = gen->states.find(to_string(state));
+  if (it == gen->states.end()) return 0.0;
+  return it->second->cumulativeTime().count();
 }
 
 
@@ -350,7 +468,7 @@ std::expected<bool, std::string> StateMachine::changeState(TransitionCmd command
   std::string error_message;
 
   std::stringstream ss;
-  RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Evaluating transition request command: " << command);
+  PACKML_INFO_STREAM("packml_sm", "Evaluating transition request command: " << command);
 
   switch (command) {
     case TransitionCmd::ABORT:
@@ -387,13 +505,13 @@ std::expected<bool, std::string> StateMachine::changeState(TransitionCmd command
 
   if (!command_valid) {
     error_message = "Invalid transition request command: " + to_string(command);
-    RCLCPP_ERROR_STREAM(rclcpp::get_logger("packml_sm"), error_message);
+    PACKML_ERROR_STREAM("packml_sm", error_message);
     return std::unexpected<std::string>(error_message);
   }
 
   if (!command_rtn) {
     error_message =  "Transition command failed: " + to_string(command);
-    RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_sm"), error_message);
+    PACKML_WARN_STREAM("packml_sm", error_message);
     return std::unexpected<std::string>(error_message);
   }
 
@@ -433,20 +551,22 @@ std::expected<bool, std::string> StateMachine::changeMode(ModeType mode, Availab
   auto return_val = gen->mode_switcher(shared_from_this(), mode1);
 
   if (return_val.has_value()) {
+    current_mode_ = mode;
+    current_avail_ = avail;
     on_mode_changed(mode);
   }
   return return_val;
 }
 
-bool StateMachine::_start() {     sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::start());     return sm_internal_.prom.get_future().get(); }
-bool StateMachine::_clear() {     sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::clear());     return sm_internal_.prom.get_future().get(); }
-bool StateMachine::_reset() {     sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::reset());     return sm_internal_.prom.get_future().get(); }
-bool StateMachine::_hold() {      sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::hold());      return sm_internal_.prom.get_future().get(); }
-bool StateMachine::_unhold() {    sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::unhold());    return sm_internal_.prom.get_future().get(); }
-bool StateMachine::_suspend() {   sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::suspend());   return sm_internal_.prom.get_future().get(); }
-bool StateMachine::_unsuspend() { sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::unsuspend()); return sm_internal_.prom.get_future().get(); }
-bool StateMachine::_stop() {      sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::stop());      return sm_internal_.prom.get_future().get(); }
-bool StateMachine::_abort() {     sm_internal_.prom = std::promise<bool>(); sm_internal_.postEvent(CmdEvent::abort());     return sm_internal_.prom.get_future().get(); }
+bool StateMachine::_start() {     auto p = std::make_shared<std::promise<bool>>(); auto f = p->get_future(); sm_internal_.postEvent(CmdEvent::start(std::move(p)));     return f.get(); }
+bool StateMachine::_clear() {     auto p = std::make_shared<std::promise<bool>>(); auto f = p->get_future(); sm_internal_.postEvent(CmdEvent::clear(std::move(p)));     return f.get(); }
+bool StateMachine::_reset() {     auto p = std::make_shared<std::promise<bool>>(); auto f = p->get_future(); sm_internal_.postEvent(CmdEvent::reset(std::move(p)));     return f.get(); }
+bool StateMachine::_hold() {      auto p = std::make_shared<std::promise<bool>>(); auto f = p->get_future(); sm_internal_.postEvent(CmdEvent::hold(std::move(p)));      return f.get(); }
+bool StateMachine::_unhold() {    auto p = std::make_shared<std::promise<bool>>(); auto f = p->get_future(); sm_internal_.postEvent(CmdEvent::unhold(std::move(p)));    return f.get(); }
+bool StateMachine::_suspend() {   auto p = std::make_shared<std::promise<bool>>(); auto f = p->get_future(); sm_internal_.postEvent(CmdEvent::suspend(std::move(p)));   return f.get(); }
+bool StateMachine::_unsuspend() { auto p = std::make_shared<std::promise<bool>>(); auto f = p->get_future(); sm_internal_.postEvent(CmdEvent::unsuspend(std::move(p))); return f.get(); }
+bool StateMachine::_stop() {      auto p = std::make_shared<std::promise<bool>>(); auto f = p->get_future(); sm_internal_.postEvent(CmdEvent::stop(std::move(p)));      return f.get(); }
+bool StateMachine::_abort() {     auto p = std::make_shared<std::promise<bool>>(); auto f = p->get_future(); sm_internal_.postEvent(CmdEvent::abort(std::move(p)));     return f.get(); }
 
 ContinuousCycle::ContinuousCycle() {
   printf("Forming CONTINUOUS CYCLE state machine (states + transitions)\n");
@@ -501,15 +621,16 @@ ContinuousCycle::ContinuousCycle() {
   // stoppable_->setInitialState(resetting_);
   // sm_internal_.setInitialState(aborted_);
 }
-void ContinuousCycle::init(){
-  gen->generate_all_packml_states(shared_from_this());
+void ContinuousCycle::init(int delay_ms){
+  gen->generate_all_packml_states(shared_from_this(), delay_ms);
   // Add parent states to state machine
   // All other states are added 'automatically' because they are under the superstate "abortable"
   sm_internal_.addState(gen->states[to_string(SuperState::ABORTABLE)]);
   sm_internal_.addState(gen->states[to_string(State::ABORTED)]);
   sm_internal_.addState(gen->states[to_string(State::ABORTING)]);
 
-  sm_internal_.setInitialState(gen->states[to_string(State::ABORTED)]);
+  // PackML mandates power-on into STOPPED (inside abortable group).
+  sm_internal_.setInitialState(gen->states[to_string(SuperState::ABORTABLE)]);
 
   // Test to see if we can adjust the state machines transitions
   auto list = gen->states[to_string(State::EXECUTE)]->transitions();
@@ -517,16 +638,23 @@ void ContinuousCycle::init(){
   {
     if (item->targetState() == gen->states[to_string(State::COMPLETING)])
     {
-      RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Found transition!");
+      PACKML_INFO_STREAM("packml_sm", "Found transition!");
       gen->states[to_string(State::EXECUTE)]->removeTransition(item);
-      RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Removed transition!");
+      PACKML_INFO_STREAM("packml_sm", "Removed transition!");
       auto trans = gen->generate_transition(gen->states[to_string(State::EXECUTE)], StatesGenerator::TransitionType::STATE_COMPLETED);
       gen->states[to_string(State::EXECUTE)]->addTransition(trans);
-      RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Added transition to self!");
+      PACKML_INFO_STREAM("packml_sm", "Added transition to self!");
     }
   }
 
-  ((ActingState*) gen->states[to_string(State::EXECUTE)])->setOperationMethod(std::bind([]()->int {std::this_thread::sleep_for(std::chrono::seconds(1));return 0;}));
+  // ContinuousCycle EXECUTE: loop using the same delay as other acting
+  // states.  Users will typically replace this via setExecute().
+  auto exec_delay = std::max(delay_ms, 1);
+  ((ActingState*) gen->states[to_string(State::EXECUTE)])->setOperationMethod(
+    [exec_delay]() -> int {
+      std::this_thread::sleep_for(std::chrono::milliseconds(exec_delay));
+      return 0;
+    });
 
   printf("State machine formed\n");
 }
@@ -584,8 +712,8 @@ SingleCycle::SingleCycle() {
   // stoppable_->setInitialState(resetting_);
 
   }
-void SingleCycle::init(){
-  gen->generate_all_packml_states(shared_from_this());
+void SingleCycle::init(int delay_ms){
+  gen->generate_all_packml_states(shared_from_this(), delay_ms);
 
   // Add parent states to state machine
   // All other states are added 'automatically' because they are under the superstate "abortable"
@@ -593,7 +721,8 @@ void SingleCycle::init(){
   sm_internal_.addState(gen->states[to_string(State::ABORTED)]);
   sm_internal_.addState(gen->states[to_string(State::ABORTING)]);
 
-  sm_internal_.setInitialState(gen->states[to_string(State::ABORTED)]);
+  // PackML mandates power-on into STOPPED (inside abortable group).
+  sm_internal_.setInitialState(gen->states[to_string(SuperState::ABORTABLE)]);
 
   // // Test to see if we can adjust the state machines transitions
   // auto list = gen.states[to_string(State::EXECUTE)]->transitions();
@@ -610,7 +739,13 @@ void SingleCycle::init(){
   //     }
   // }
 
-  ((ActingState*) gen->states[to_string(State::EXECUTE)])->setOperationMethod(std::bind([]()->int { std::this_thread::sleep_for(std::chrono::seconds(1)); return 0;}));
+  // SingleCycle default EXECUTE: uses the same delay; users override via setExecute().
+  auto exec_delay = std::max(delay_ms, 1);
+  ((ActingState*) gen->states[to_string(State::EXECUTE)])->setOperationMethod(
+    [exec_delay]() -> int {
+      std::this_thread::sleep_for(std::chrono::milliseconds(exec_delay));
+      return 0;
+    });
 
   printf("End of single cycle setup\n");
 

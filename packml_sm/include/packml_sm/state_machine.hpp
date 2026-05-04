@@ -42,7 +42,7 @@
 #include "packml_sm/transitions/cmd_transition.hpp"
 // #include "packml_sm/states_generator.hpp"
 // #include "packml_sm/transitions.hpp"
-#include "rclcpp/rclcpp.hpp"
+#include "packml_sm/logging.hpp"
 
 namespace packml_sm
 {
@@ -56,29 +56,43 @@ namespace packml_sm
     {
       if (event->type() == PACKML_CMD_EVENT_TYPE)
       {
-        if (event->isAccepted())
-        {
-          prom.set_value(true);
-          RCLCPP_INFO(rclcpp::get_logger("packml_sm"), "We have accepted the event!");
-        }
-        else
-        {
-          prom.set_value(false);
-          RCLCPP_WARN(rclcpp::get_logger("packml_sm"), "Event has not been accepted!");
+        auto * ce = static_cast<CmdEvent *>(event);
+        if (ce->prom) {
+          if (event->isAccepted())
+          {
+            ce->prom->set_value(true);
+            PACKML_INFO("packml_sm", "We have accepted the event!");
+          }
+          else
+          {
+            ce->prom->set_value(false);
+            PACKML_WARN("packml_sm", "Event has not been accepted!");
+          }
         }
       }
-      else if (event->type() == PACKML_ERROR_EVENT_TYPE || event->type() == PACKML_STATE_COMPLETE_EVENT_TYPE)
+      else if (event->type() == PACKML_ERROR_EVENT_TYPE)
+      {
+        // Surface the error code to the owning StateMachine, if it has
+        // subscribed via on_error_code.
+        auto * ee = static_cast<ErrorEvent *>(event);
+        if (on_error_code) {
+          on_error_code(ee->code);
+        }
+      }
+      else if (event->type() == PACKML_STATE_COMPLETE_EVENT_TYPE)
       {
         // We can do something here with these custom packml events
       }
       else
       {
-        RCLCPP_DEBUG(rclcpp::get_logger("packml_sm"), "This is not a user defined event!");
+        PACKML_DEBUG("packml_sm", "This is not a user defined event!");
       }
     }
 
   public:
-    std::promise<bool> prom;
+    // Optional hook (set by the owning StateMachine) so error codes raised by
+    // ActingState::operation() can be observed via getLastErrorCode().
+    std::function<void(int)> on_error_code;
   };
 
 
@@ -262,14 +276,18 @@ class StateMachine : public QObject, public StateMachineInterface, public std::e
 public:
   /**
   * @brief Function to create a single cycle state machine (executes once)
+  * @param delay_ms Default delay for acting states (ms). Lower values speed
+  *        up tests.  Production default: 200.
   */
-  static std::shared_ptr<StateMachine> singleCycleSM();
+  static std::shared_ptr<StateMachine> singleCycleSM(int delay_ms = 200);
 
 
   /**
   * @brief Function to create a continuous cycle state machine (executes forever until stopped)
+  * @param delay_ms Default delay for acting states (ms). Lower values speed
+  *        up tests.  Production default: 200.
   */
-  static std::shared_ptr<StateMachine> continuousCycleSM();
+  static std::shared_ptr<StateMachine> continuousCycleSM(int delay_ms = 200);
 
 
   /**
@@ -297,6 +315,18 @@ public:
   */
   bool setResetting(std::function<int()> resetting_method);
 
+  /**
+  * @brief Bind a custom operation to any acting state by PackML state enum.
+  *        Returns false if the state is not found or not an ActingState.
+  */
+  bool setStateOperation(State state, std::function<int()> method);
+
+  /**
+  * @brief Returns the cumulative time (seconds) spent in the given state
+  *        since the SM was created.  Returns 0 if the state is not found.
+  */
+  double getStateCumulativeTime(State state) const;
+
 
   /**
   * @brief Function that returns whether the state machine is active or not
@@ -315,6 +345,45 @@ public:
     return state_value_;
   }
 
+  /**
+  * @brief Returns the most recent ModeType that was applied via changeMode().
+  *        Defaults to ModeType{} (== 0) before the first successful change.
+  */
+  ModeType getCurrentMode() const
+  {
+    return current_mode_;
+  }
+
+  /**
+  * @brief Returns the AvailableStates mask that was applied with the most
+  *        recent successful changeMode() call.
+  */
+  AvailableStates getAvailableStates() const
+  {
+    return current_avail_;
+  }
+
+  /**
+  * @brief Returns the last error code reported by an Acting state's bound
+  *        function (the non-zero value returned by setExecute / setResetting
+  *        callbacks).  Returns 0 when no error has been recorded since the
+  *        last clear() / reset().
+  */
+  int getLastErrorCode() const
+  {
+    return last_error_code_;
+  }
+
+  /**
+  * @brief Test/instrumentation hook -- internal acting states call this when
+  *        their bound function returns a non-zero error code.  Not intended
+  *        for application code.
+  */
+  void setLastErrorCode(int code)
+  {
+    last_error_code_ = code;
+  }
+
   virtual std::expected<bool, std::string> changeMode(ModeType mode);
 
   virtual std::expected<bool, std::string> changeMode(ModeType mode, AvailableStates avail);
@@ -322,18 +391,26 @@ public:
   virtual std::expected<bool, std::string> changeState(TransitionCmd mode);
 
   std::function<void(State value, QString name)> on_state_changed = [](packml_sm::State value, QString name){
-      RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Default callback; State changed to: " << name.toStdString() << "(" << value << ")");
+      PACKML_INFO_STREAM("packml_sm", "Default callback; State changed to: " << name.toStdString() << "(" << value << ")");
     };
   std::function<void(ModeType value)> on_mode_changed = [](packml_sm::ModeType value) {
-      RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Default callback; Mode changed to: " << packml_sm::to_string(value));
+      PACKML_INFO_STREAM("packml_sm", "Default callback; Mode changed to: " << packml_sm::to_string(value));
     };
 
   /**
   * @brief Class destructor
   */
-  virtual ~StateMachine() {}
+  virtual ~StateMachine();
 
 protected:
+  /**
+  * @brief Block until every ActingState's currently-running operation
+  *        (`function_state_` future) has returned.  Safe to call before
+  *        or after the inner QStateMachine has been stopped.  Bounded only
+  *        by the user's bound-function duration -- supports lambdas of
+  *        any length without time-based hacks.
+  */
+  void drainActingStates();
   /**
   * @brief Class constructor
   */
@@ -405,6 +482,18 @@ protected:
   * @brief Name of the current state
   */
   QString state_name_;
+
+  /**
+  * @brief Cached mode + mask (set by successful changeMode calls).  See
+  *        getCurrentMode() / getAvailableStates().
+  */
+  ModeType current_mode_{};
+  AvailableStates current_avail_{};
+
+  /**
+  * @brief Last error code reported by an acting-state operation.
+  */
+  int last_error_code_{0};
 
 
   /**
@@ -556,7 +645,7 @@ public:
   */
   ContinuousCycle();
 
-  void init();
+  void init(int delay_ms = 200);
 
   /**
   * @brief Class desstructor
@@ -578,7 +667,7 @@ public:
   */
   SingleCycle();
 
-  void init();
+  void init(int delay_ms = 200);
 
   /**
   * @brief Class destructor

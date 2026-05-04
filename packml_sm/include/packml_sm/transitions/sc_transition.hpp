@@ -61,6 +61,6 @@ protected:
   * @brief Function to trigger an action when the transition is happening
   * @param e - triggering event
   */
-  virtual void onTransition(QEvent * e) {RCLCPP_DEBUG_STREAM(rclcpp::get_logger("packml_sm"), "State Complete! type: " << e->type());}
+  virtual void onTransition(QEvent * e) {PACKML_DEBUG_STREAM("packml_sm", "State Complete! type: " << e->type());}
 };
 } // namespace packml_sm
