@@ -24,7 +24,7 @@
 #include <thread>
 #include <sstream>
 #include "packml_ros/interface/packml_interface.hpp"
-#include "packml_ros/modes_config.hpp"
+#include "packml_sm/modes_config.hpp"
 #include "packml_sm/common.hpp"
 #include "packml_sm/state_machine.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -165,11 +165,8 @@ public:
     //   std::cout << "Error setting parameter!";
     // }
 
-    // Create SM and connect to Qt components
-    // Execute method runs forever until stopped
-    // sm = packml_sm::StateMachine::continuousCycleSM();
-    // current_mode = packml_sm::ModeType::MANUAL;
-    sm = packml_sm::StateMachine::singleCycleSM();  // Execute method runs once
+    // Create continuous-cycle SM (runs EXECUTE in a loop until STOP).
+    sm = packml_sm::StateMachine::continuousCycleSM();
 
     sm->on_state_changed = [this](packml_sm::State value, QString name) {
       this->changed_prom_ = std::promise<bool>();
@@ -239,7 +236,7 @@ public:
     auto modes_config_path = node->get_parameter("modes_config_file").as_string();
 
     if (!modes_config_path.empty()) {
-      auto state_masks = packml_ros::parse_modes_config(modes_config_path);
+      auto state_masks = packml_sm::parse_modes_config(modes_config_path);
       auto it = state_masks.find(initial_mode);
       if (it != state_masks.end()) {
         sm->changeMode(initial_mode, it->second);
@@ -516,7 +513,7 @@ public:
 /**
  * @brief Function to be run in a thread to execute a QT object for a state machine
  */
-void qtWorker(int argc, char* argv[])
+inline void qtWorker(int argc, char* argv[])
 {
   QCoreApplication a(argc, argv);
   a.exec();

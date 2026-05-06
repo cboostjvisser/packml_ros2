@@ -29,8 +29,7 @@ find_package(rclcpp REQUIRED)
 find_package(packml_msgs REQUIRED)
 find_package(packml_sm REQUIRED)
 # find_package(std_msgs REQUIRED)
-find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
-find_package(yaml-cpp REQUIRED)
+find_package(Qt5 COMPONENTS Core REQUIRED)
 
 add_executable(${PROJECT_NAME}_node src/packml_ros_node.cpp)
 
@@ -45,9 +44,7 @@ target_link_libraries(
           packml_sm::packml_sm
           ${packml_msgs_TARGETS}
           # std_msgs
-          Qt5::Core
-          Qt5::Gui
-          yaml-cpp)
+          Qt5::Core)
 
 add_library(${PROJECT_NAME} INTERFACE)
 
@@ -62,8 +59,7 @@ target_link_libraries(
           packml_sm::packml_sm
           ${packml_msgs_TARGETS}
           # std_msgs
-          Qt5::Core
-          yaml-cpp)
+          Qt5::Core)
 
 #install
 install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
@@ -85,15 +81,27 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_gmock REQUIRED)
 
-  ament_add_gmock(${PROJECT_NAME}_utest test/utest.cpp)
+  # Main test executable with all packml_ros tests
+  ament_add_gtest(${PROJECT_NAME}_tests
+    test/test_main.cpp
+    test/test_manager_state_transitions.cpp
+    test/test_manager_mode_changes.cpp
+    test/test_manager_status_publication.cpp
+    test/test_manager_client_fanout.cpp
+    test/test_legacy_smnode.cpp
+    test/test_node_interface.cpp
+    test/test_command_mapping.cpp
+    test/test_ros_logger.cpp
+    test/test_modes_config.cpp
+    # test/test_disabled_future_features.cpp
+  )
 
   target_include_directories(
-    ${PROJECT_NAME}_utest PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    ${PROJECT_NAME}_tests PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+                              $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
                               $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
 
-  target_link_libraries(${PROJECT_NAME}_utest ${PROJECT_NAME})
-
-  # ament_target_dependencies(${PROJECT_NAME}_utest rclcpp packml_msgs packml_sm std_msgs Qt5)
+  target_link_libraries(${PROJECT_NAME}_tests ${PROJECT_NAME} Qt5::Core)
 endif()
 
 #Substituting the catkin_package () components:

@@ -19,6 +19,7 @@
 
 #include <QtGui>
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <qcoreevent.h>
@@ -342,7 +343,7 @@ public:
   */
   State getCurrentState()
   {
-    return state_value_;
+    return state_value_.load(std::memory_order_acquire);
   }
 
   /**
@@ -475,7 +476,7 @@ protected:
   /**
   * @brief Number of the current state
   */
-  State state_value_;
+  std::atomic<State> state_value_;
 
 
   /**

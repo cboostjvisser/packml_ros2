@@ -32,6 +32,7 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # Include the modes generation function so it can be used during this build.
 include(cmake/packml_sm_generate_modes.cmake)
@@ -79,7 +80,8 @@ add_library(${PROJECT_NAME} SHARED
 target_link_libraries(
   ${PROJECT_NAME}
   PUBLIC Qt5::Core
-         Qt5::Gui)
+         Qt5::Gui
+         yaml-cpp)
 
 
 target_include_directories(

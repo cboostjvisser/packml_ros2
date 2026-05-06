@@ -288,10 +288,9 @@ StateMachine::~StateMachine() {
   // Final safety net: even after we drained every ActingState we own, the
   // global QtConcurrent thread pool may still hold a worker for an
   // operation that completed but whose runner hasn't been recycled yet.
-  // A bounded wait keeps teardown predictable across rapid SM creation/
-  // destruction cycles (heavy in tests).  This call only awaits worker
-  // thread cleanup — the user lambda has already returned above.
-  QThreadPool::globalInstance()->waitForDone(100);
+  // Wait indefinitely — drainActingStates() guarantees user lambdas have
+  // returned, so this only waits for thread-pool bookkeeping.
+  QThreadPool::globalInstance()->waitForDone(-1);
 }
 
 
@@ -403,7 +402,7 @@ StateMachine::StateMachine() : gen(std::make_shared<StatesGenerator>()) {
 void StateMachine::setState(State value, QString name) {
   std::string nameUtf = name.toStdString();
   PACKML_INFO_STREAM("packml_sm", "State changed(event) to: " << nameUtf << "(" << value << ")");
-  state_value_ = value;
+  state_value_.store(value, std::memory_order_release);
   state_name_ = name;
   on_state_changed(value, name);
   // emit stateChanged(value, name);

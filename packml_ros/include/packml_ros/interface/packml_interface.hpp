@@ -362,7 +362,7 @@ protected:
 
       if (futures.size() <= 0) {
         RCLCPP_WARN(rclcpp::get_logger("packml_ros"), "No futures to wait on!");
-        return false;
+        return true;
       } else if (futures.size() != client_map_.size()) {
         // TODO: see line 243
         RCLCPP_WARN(rclcpp::get_logger("packml_ros"), "Not all clients responded with a future, maybe some are offline?");
@@ -471,7 +471,7 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
 
       if (!success) {
         res->success = false;
-        res->error_code = 1;
+        res->error_code = res->INVALID_MODE_REQUEST;
         res->message = error_message;
       }
       else
@@ -600,7 +600,7 @@ protected:
     node_ = node;
     sm_ = sm;
 
-    node->declare_parameter("node_names", rclcpp::PARAMETER_STRING_ARRAY);
+    node->declare_parameter("node_names", std::vector<std::string>{});
     std::vector<std::string> node_names_;
 
     node_names_= node->get_parameter("node_names").as_string_array();

@@ -149,13 +149,14 @@ public:
   */
   explicit SMNode(rclcpp::Node::SharedPtr node)
   {
+    // Create continuous-cycle SM (runs EXECUTE in a loop until STOP).
+    sm = packml_sm::StateMachine::continuousCycleSM();
 
-    // Create SM and connect to Qt components
-    // Execute method runs forever until stopped
-    // sm = packml_sm::StateMachine::continuousCycleSM();
-    sm = packml_sm::StateMachine::singleCycleSM();  // Execute method runs once
-
-    init(node, sm);
+    // NOTE: We intentionally do NOT call PackmlManagerInterface::init()
+    // here because SMNode creates its own service handlers below with
+    // different service names (~/transition, ~/modeChange, ~/allStatus).
+    // Calling init() would create duplicate ~/allStatus and conflicting
+    // ~/changeState + ~/changeMode services.
 
   // try
   // {
@@ -393,7 +394,16 @@ public:
   /**
   * @brief The class constructor
   */
-  virtual ~SMNode() {}
+  virtual ~SMNode()
+  {
+    trans_server_.reset();
+    status_server_.reset();
+    mode_server_.reset();
+    if (sm) {
+      sm->deactivate();
+      sm.reset();
+    }
+  }
 
   /**
   * @brief Function to bind to the Execute state for the state machine, waiting for a set amount
@@ -423,7 +433,7 @@ public:
 /**
 * @brief Function to be run in a thread to execute a QT object for a state machine
 */
-void qtWorker(int argc, char * argv[])
+inline void qtWorker(int argc, char * argv[])
 {
   QCoreApplication a(argc, argv);
   a.exec();
