@@ -26,6 +26,7 @@
 #include "packml_ros/packml_ros-new.hpp"
 #include "packml_msgs/srv/mode_change.hpp"
 #include "packml_msgs/srv/state_change.hpp"
+#include "packml_sm/default_modes.hpp"
 #include "test_helpers.hpp"
 
 using namespace std::chrono_literals;
@@ -105,8 +106,7 @@ TEST_F(ManagerModeChangeTest, ModeChangeFromIdleSucceeds)
 {
   drive_to_idle();
 
-  // Change to a different mode (integer value; mode types are user-defined)
-  auto resp = send_mode(2);
+  auto resp = send_mode(packml_modes::Maintenance);
   ASSERT_NE(resp, nullptr);
   EXPECT_TRUE(resp->success) << "Mode change failed: " << resp->message;
   EXPECT_EQ(resp->error_code, packml_msgs::srv::ModeChange::Response::SUCCESS);
@@ -115,7 +115,7 @@ TEST_F(ManagerModeChangeTest, ModeChangeFromIdleSucceeds)
 TEST_F(ManagerModeChangeTest, ModeChangeFromInvalidStateReturnsError)
 {
   // SM starts in STOPPED; mode change only allowed from IDLE.
-  auto resp = send_mode(2);
+  auto resp = send_mode(packml_modes::Maintenance);
   ASSERT_NE(resp, nullptr);
   EXPECT_FALSE(resp->success);
   EXPECT_NE(resp->error_code, packml_msgs::srv::ModeChange::Response::SUCCESS);
@@ -126,7 +126,7 @@ TEST_F(ManagerModeChangeTest, ModeChangeToSameModeSucceeds)
   drive_to_idle();
 
   // Changing to a mode (even same one) from IDLE should succeed
-  auto resp = send_mode(1);
+  auto resp = send_mode(packml_modes::Production);
   ASSERT_NE(resp, nullptr);
   EXPECT_TRUE(resp->success) << "Same-mode change failed: " << resp->message;
 }

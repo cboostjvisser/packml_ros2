@@ -31,6 +31,7 @@
 #include "packml_msgs/srv/mode_transition.hpp"
 #include "packml_msgs/msg/status.hpp"
 #include "packml_msgs/msg/state.hpp"
+#include "packml_sm/default_modes.hpp"
 #include "test_helpers.hpp"
 
 using namespace std::chrono_literals;
@@ -158,17 +159,17 @@ TEST_F(NodeInterfaceTest, StateTransitionRejectedReturnsFailure)
 TEST_F(NodeInterfaceTest, ModeTransitionApprovedReturnsSuccess)
 {
   test_node_->approve_mode.store(true);
-  auto resp = send_mode(2);
+  auto resp = send_mode(packml_modes::Maintenance);
   ASSERT_NE(resp, nullptr);
   EXPECT_TRUE(resp->success);
   EXPECT_EQ(test_node_->mode_trans_req_count.load(), 1);
-  EXPECT_EQ(test_node_->last_requested_mode.load(), 2);
+  EXPECT_EQ(test_node_->last_requested_mode.load(), packml_modes::Maintenance);
 }
 
 TEST_F(NodeInterfaceTest, ModeTransitionRejectedReturnsFailure)
 {
   test_node_->approve_mode.store(false);
-  auto resp = send_mode(3);
+  auto resp = send_mode(packml_modes::Manual);
   ASSERT_NE(resp, nullptr);
   EXPECT_FALSE(resp->success);
   EXPECT_EQ(test_node_->mode_trans_req_count.load(), 1);

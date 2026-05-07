@@ -31,6 +31,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -43,7 +44,7 @@ include(cmake/packml_sm_generate_modes.cmake)
 #   include
 # )
 
-qt5_wrap_cpp(packml_sm_MOCS
+qt5_wrap_cpp(${PROJECT_NAME}_MOCS
   include/packml_sm/state_machine.hpp
 
   include/packml_sm/states/state.hpp
@@ -75,7 +76,7 @@ add_library(${PROJECT_NAME} SHARED
 
   src/state_machine.cpp
 
-  ${packml_sm_MOCS})
+  ${${PROJECT_NAME}_MOCS})
 
 target_link_libraries(
   ${PROJECT_NAME}
@@ -91,11 +92,32 @@ target_include_directories(
 
 target_cxx_version(${PROJECT_NAME} PUBLIC VERSION 23)
 
-# Generate the default PackML modes header from the yaml file.
-packml_sm_generate_modes(${PROJECT_NAME} modes/default_modes.yaml)
+# Generate the default PackML modes header (and Python module) from the yaml file.
+set(_packml_modes_py_dir "${CMAKE_CURRENT_BINARY_DIR}/packml_modes/python")
+packml_sm_generate_modes(${PROJECT_NAME} modes/default_modes.yaml
+  INCLUDE_PREFIX ${PROJECT_NAME}
+  PYTHON_OUTPUT "${_packml_modes_py_dir}")
+
+# Determine Python install directory (ament convention: lib/pythonX.Y/site-packages)
+if(NOT DEFINED PYTHON_INSTALL_DIR)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  set(PYTHON_INSTALL_DIR "lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages")
+endif()
+
+# Install the generated packml_modes Python package.
+install(DIRECTORY "${_packml_modes_py_dir}/packml_modes"
+  DESTINATION "${PYTHON_INSTALL_DIR}"
+  PATTERN "__pycache__" EXCLUDE
+)
 
 #install
 install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
+
+# Install the generated modes header alongside the package's own headers.
+install(
+  FILES "${CMAKE_CURRENT_BINARY_DIR}/packml_modes/include/${PROJECT_NAME}/default_modes.hpp"
+  DESTINATION "include/${PROJECT_NAME}/${PROJECT_NAME}"
+)
 
 install(
   FILES

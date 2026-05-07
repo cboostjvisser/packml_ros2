@@ -43,7 +43,23 @@ target_link_libraries(
   PRIVATE rclcpp::rclcpp
           packml_sm::packml_sm
           ${packml_msgs_TARGETS}
+          transition_guard
           # std_msgs
+          Qt5::Core)
+
+add_executable(example_packml_node examples/example_packml_node.cpp)
+
+target_include_directories(
+    example_packml_node
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+           $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
+
+target_link_libraries(
+  example_packml_node
+  PRIVATE rclcpp::rclcpp
+          packml_sm::packml_sm
+          ${packml_msgs_TARGETS}
+          transition_guard
           Qt5::Core)
 
 add_library(${PROJECT_NAME} INTERFACE)
@@ -58,13 +74,25 @@ target_link_libraries(
   INTERFACE rclcpp::rclcpp
           packml_sm::packml_sm
           ${packml_msgs_TARGETS}
+          transition_guard
           # std_msgs
           Qt5::Core)
+
+# TransitionGuard: ROS-independent client protocol logic.
+# Separate shared library so pybind11 can link it without pulling in ROS/Qt.
+add_library(transition_guard SHARED src/transition_guard.cpp)
+
+target_include_directories(
+    transition_guard
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+           $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
+
+target_link_libraries(transition_guard PUBLIC packml_sm::packml_sm)
 
 #install
 install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
 
-install(TARGETS ${PROJECT_NAME} ${PROJECT_NAME}_node
+install(TARGETS ${PROJECT_NAME} ${PROJECT_NAME}_node example_packml_node transition_guard
   EXPORT ${PROJECT_NAME}-targets
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
@@ -93,6 +121,7 @@ if(BUILD_TESTING)
     test/test_command_mapping.cpp
     test/test_ros_logger.cpp
     test/test_modes_config.cpp
+    test/test_transition_guard.cpp
     # test/test_disabled_future_features.cpp
   )
 
@@ -101,7 +130,7 @@ if(BUILD_TESTING)
                               $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
                               $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
 
-  target_link_libraries(${PROJECT_NAME}_tests ${PROJECT_NAME} Qt5::Core)
+  target_link_libraries(${PROJECT_NAME}_tests ${PROJECT_NAME} transition_guard Qt5::Core)
 endif()
 
 #Substituting the catkin_package () components:

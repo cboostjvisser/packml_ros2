@@ -40,6 +40,7 @@
 
 #include <packml_sm/common.hpp>
 #include <packml_sm/state_machine.hpp>
+#include <packml_ros/transition_guard.hpp>
 
 #include <packml_msgs/srv/mode_transition.hpp>
 #include <packml_msgs/srv/state_transition.hpp>
@@ -96,111 +97,78 @@ class PackmlNodeInterface
 
   rclcpp::Service<packml_msgs::srv::AllStatus>::SharedPtr status_server_;
 
-  packml_sm::ModeType current_mode;
-  packml_sm::ModeType switching_mode;
-
-  packml_sm::State current_state;
-  packml_sm::State switching_state;
-
-  bool waiting_for_new_mode;
-  bool waiting_for_new_state;
+  /// Shared protocol logic — single source of truth for both C++ and Python.
+  packml_ros::TransitionGuard guard_;
 
   protected:
 
-  inline auto get_current_packml_mode() const -> packml_sm::ModeType { return current_mode; }
+  inline auto get_current_packml_mode() const -> packml_sm::ModeType { return guard_.current_mode(); }
 
-  inline auto get_current_packml_state() const -> packml_sm::State { return current_state; }
+  inline auto get_current_packml_state() const -> packml_sm::State { return guard_.current_state(); }
 
-  inline bool is_switching_mode() const { return waiting_for_new_mode; }
+  inline bool is_switching_mode() const { return guard_.is_switching_mode(); }
 
-  inline bool is_switching_state() const { return waiting_for_new_state; }
+  inline bool is_switching_state() const { return guard_.is_switching_state(); }
 
   template <typename NodeT>
   inline void init(std::shared_ptr<NodeT> node) {
-    /**
-    * @brief Callback function upon transition request by a client
-    * @param req - data coming from the client
-    * @param res - response to the client
-    */
+
     auto onStateTranseReq =
       [this](const std::shared_ptr<packml_msgs::srv::StateTransition::Request> req,
         std::shared_ptr<packml_msgs::srv::StateTransition::Response> res) -> void {
             auto state = static_cast<packml_sm::State>(req->state.val);
-            if (state == current_state) {
+            auto result = guard_.request_state(state);
+
+            if (result.already_there) {
               RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "Node already in state: " << to_string(state));
               res->success = true;
               return;
             }
+
             RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "Node State changing to: " << to_string(state));
 
-            bool success = false;
-            std::string error_string;
-
-            if (waiting_for_new_state) {
-              error_string = "Changing state but already waiting on new state";
-            } else if (waiting_for_new_mode) {
-              error_string = "Changing state but mode change is still active";
+            if (!result.error.empty()) {
+              RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), result.error);
             }
-            // TODO: else disabled, because currently a node cannot catch-up if it missed a state change
-            // else {
-              if (on_state_trans_req(state)) {
-                RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "Node approved state switch");
-                waiting_for_new_state = true;
-                switching_state = state;
-                success = true;
-              }
-              else {
-                error_string = "Node did not approve state switch";
-              }
-              // current_state = state;
-            // }
 
-            if (!success) {
+            if (result.accepted && on_state_trans_req(state)) {
+              RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "Node approved state switch");
+              res->success = true;
+            } else {
+              std::string error_string = "Node did not approve state switch";
               res->message = error_string;
+              res->success = false;
               RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), error_string);
             }
-            res->success = success;
         };
 
     auto onModeTransReq =
       [this](const std::shared_ptr<packml_msgs::srv::ModeTransition::Request> req,
         std::shared_ptr<packml_msgs::srv::ModeTransition::Response> res)-> void {
             auto mode = static_cast<packml_sm::ModeType>(req->mode.val);
-            if (mode == current_mode) {
+            auto result = guard_.request_mode(mode);
+
+            if (result.already_there) {
               RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "Node already in mode: " << packml_sm::to_string(mode));
               res->success = true;
               return;
             }
+
             RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "Node Mode changing to: " << packml_sm::to_string(mode));
 
-            bool success = false;
-            std::string error_string;
-
-            if (waiting_for_new_state) {
-              error_string = "Changing mode but already waiting on new state";
-            } else if (waiting_for_new_mode) {
-              error_string = "Changing mode but mode change is still active";
+            if (!result.error.empty()) {
+              RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), result.error);
             }
-            // TODO: else disabled, because currently a node cannot catch-up if it missed a mode change
-            // else {
-              if (on_mode_trans_req(mode)){
-                RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "Node approved mode switch");
-                waiting_for_new_mode = true;
-                switching_mode = mode;
-                success = true;
-              } else {
-                error_string = "Node did not approve mode switch";
-              }
-              // current_mode = mode;
 
-            // }
-
-            if (!success) {
+            if (result.accepted && on_mode_trans_req(mode)) {
+              RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "Node approved mode switch");
+              res->success = true;
+            } else {
+              std::string error_string = "Node did not approve mode switch";
               res->message = error_string;
+              res->success = false;
               RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), error_string);
             }
-            res->success = success;
-
         };
 
     auto onStatusChanged =
@@ -208,49 +176,18 @@ class PackmlNodeInterface
         auto state = static_cast<packml_sm::State>(status.state.val);
         auto mode = static_cast<packml_sm::ModeType>(status.mode.val);
 
-        bool already_switched = false;
-
-        if (current_state != state) {
-          already_switched = true;
-          RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "State change");
-          if (switching_state != state && switching_state != packml_sm::State::UNDEFINED) {
-            RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), "State published(" << state << ") is not the state expected (" << switching_state << ") switching to");
-          }
-          // TODO: else disabled, because currently a node cannot catch-up if it missed a state change
-          // else {
-            current_state = state;
-            waiting_for_new_state = false;
-            RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "Status changed to: State: " << state);
-            on_status_changed();
-          // }
-        }
-
-        if (current_mode != mode) {
-          if (already_switched) {
-            RCLCPP_WARN(rclcpp::get_logger("packml_ros"), "State and Mode switch detected!");
-          }
-          RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "Mode change");
-          if (switching_mode != mode && switching_mode != 0) {
-            RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), "Mode published(" << packml_sm::to_string(mode) << ") is not the Mode expected (" << packml_sm::to_string(switching_mode) << ") switching to");
-          }
-          // TODO: else disabled, because currently a node cannot catch-up if it missed a mode change
-          // else {
-            current_mode = mode;
-            waiting_for_new_mode = false;
-            RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "Mode changed to: " << packml_sm::to_string(mode));
-            on_status_changed();
-          // }
+        if (guard_.on_status_update(state, mode)) {
+          RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"),
+            "Status changed - State: " << to_string(state) << ", Mode: " << packml_sm::to_string(mode));
+          on_status_changed();
         }
       };
 
-    trans_server_ = node->template create_service<packml_msgs::srv::StateTransition>("~/packml_state_transition", onStateTranseReq);
-    mode_server_ = node->template create_service<packml_msgs::srv::ModeTransition>("~/packml_mode_transition", onModeTransReq);
-    status_sub_ = node->template create_subscription<packml_msgs::msg::Status>("packml_status", rclcpp::SensorDataQoS(), onStatusChanged);
+    trans_server_ = node->template create_service<packml_msgs::srv::StateTransition>("~/" + std::string(packml_ros::kStateTransitionService), onStateTranseReq);
+    mode_server_ = node->template create_service<packml_msgs::srv::ModeTransition>("~/" + std::string(packml_ros::kModeTransitionService), onModeTransReq);
+    status_sub_ = node->template create_subscription<packml_msgs::msg::Status>(packml_ros::kStatusTopic, rclcpp::SensorDataQoS(), onStatusChanged);
 
     RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "Services created!");
-    current_state = packml_sm::State::UNDEFINED;
-    switching_mode = 0;
-    switching_state = packml_sm::State::UNDEFINED;
   }
 
   virtual bool on_state_trans_req(packml_sm::State switching_state) = 0;
@@ -270,8 +207,8 @@ class PackmlClientInterface {
   rclcpp::CallbackGroup::SharedPtr callback_grp;
 
   PackmlClientInterface(std::string name, rclcpp::Node::SharedPtr parent_node) {
-    auto state_tr_service_name = name + "/packml_state_transition";
-    auto mode_tr_service_name = name + "/packml_mode_transition";
+    auto state_tr_service_name = name + "/" + packml_ros::kStateTransitionService;
+    auto mode_tr_service_name = name + "/" + packml_ros::kModeTransitionService;
     // auto status_sub_name = "packml_status";
 
     callback_grp = parent_node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
@@ -621,7 +558,7 @@ protected:
     mode_server_ = node->create_service<packml_msgs::srv::ModeChange>("~/changeMode", [this](const std::shared_ptr<packml_msgs::srv::ModeChange::Request>& req, const std::shared_ptr<packml_msgs::srv::ModeChange::Response>& res){on_change_mode(req, res); });
     state_server_ = node->create_service<packml_msgs::srv::StateChange>("~/changeState", [this](const std::shared_ptr<packml_msgs::srv::StateChange::Request>& req, const std::shared_ptr<packml_msgs::srv::StateChange::Response>& res){on_change_state(req, res); });
     status_server_ = node->create_service<packml_msgs::srv::AllStatus>("~/allStatus", [this](const std::shared_ptr<packml_msgs::srv::AllStatus::Request>& req, const std::shared_ptr<packml_msgs::srv::AllStatus::Response>& res){on_all_status(req, res); });
-    status_pub_ = node->create_publisher<packml_msgs::msg::Status>("packml_status", rclcpp::SensorDataQoS());
+    status_pub_ = node->create_publisher<packml_msgs::msg::Status>(packml_ros::kStatusTopic, rclcpp::SensorDataQoS());
 
   }
 

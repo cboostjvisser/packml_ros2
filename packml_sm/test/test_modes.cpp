@@ -24,13 +24,9 @@
 #include <chrono>
 #include <gtest/gtest.h>
 
-// default_modes.hpp specialises packml_sm::to_string<ModeType>; it must be
-// included before any header that triggers instantiation of the generic
-// template (e.g. state_machine.hpp).
-#include "default_modes.hpp"  // generated from modes/default_modes.yaml
-
 #include "packml_sm/common.hpp"
 #include "packml_sm/state_machine.hpp"
+#include "packml_sm/default_modes.hpp"
 #include "test_helpers.hpp"
 
 using packml_sm::AvailableStates;
