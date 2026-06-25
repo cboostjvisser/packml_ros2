@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+# colcon / ROS 2 workspace outputs
+install/
+log/
+
 # Distribution / packaging
 .Python
 build/

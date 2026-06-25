@@ -10,6 +10,7 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <buildtool_depend>ros_industrial_cmake_boilerplate</buildtool_depend>
 
   <build_depend>qtbase5-dev</build_depend>
   <build_depend>libyaml-cpp-dev</build_depend>
