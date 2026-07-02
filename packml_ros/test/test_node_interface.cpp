@@ -137,6 +137,8 @@ protected:
   std::unique_ptr<packml_ros_test::SpinHelper> spinner_;
 };
 
+// When the subclass approves a state transition request, the service reports success
+// and the callback receives the requested state exactly once.
 TEST_F(NodeInterfaceTest, StateTransitionApprovedReturnsSuccess)
 {
   test_node_->approve_state.store(true);
@@ -147,6 +149,9 @@ TEST_F(NodeInterfaceTest, StateTransitionApprovedReturnsSuccess)
   EXPECT_EQ(test_node_->last_requested_state.load(), packml_msgs::msg::State::IDLE);
 }
 
+// When the subclass rejects a state transition request, the service reports failure,
+// but the callback is still invoked exactly once (rejection is a business decision,
+// not a dispatch failure).
 TEST_F(NodeInterfaceTest, StateTransitionRejectedReturnsFailure)
 {
   test_node_->approve_state.store(false);
@@ -156,6 +161,8 @@ TEST_F(NodeInterfaceTest, StateTransitionRejectedReturnsFailure)
   EXPECT_EQ(test_node_->state_trans_req_count.load(), 1);
 }
 
+// When the subclass approves a mode transition request, the service reports success
+// and the callback receives the requested mode exactly once.
 TEST_F(NodeInterfaceTest, ModeTransitionApprovedReturnsSuccess)
 {
   test_node_->approve_mode.store(true);
@@ -166,6 +173,8 @@ TEST_F(NodeInterfaceTest, ModeTransitionApprovedReturnsSuccess)
   EXPECT_EQ(test_node_->last_requested_mode.load(), packml_modes::Maintenance);
 }
 
+// When the subclass rejects a mode transition request, the service reports failure,
+// and the callback is still invoked exactly once.
 TEST_F(NodeInterfaceTest, ModeTransitionRejectedReturnsFailure)
 {
   test_node_->approve_mode.store(false);
@@ -175,27 +184,37 @@ TEST_F(NodeInterfaceTest, ModeTransitionRejectedReturnsFailure)
   EXPECT_EQ(test_node_->mode_trans_req_count.load(), 1);
 }
 
+// Requesting a state the node already reports (via the packml_status subscription,
+// not a prior transition request) hits the "already there" shortcut: the service
+// returns success immediately WITHOUT invoking on_state_trans_req() again.
 TEST_F(NodeInterfaceTest, SameStateTransitionReturnsSuccessImmediately)
 {
-  // First send a state to establish current state
+  // Establish current_state = IDLE via a real status publication (matches the
+  // manager's latched QoS), exactly as it happens in production.
+  auto status_pub = node_->create_publisher<packml_msgs::msg::Status>(
+    "packml_status", rclcpp::QoS(1).transient_local().reliable());
+  std::this_thread::sleep_for(100ms);
+  packml_msgs::msg::Status status_msg;
+  status_msg.state.val = packml_msgs::msg::State::IDLE;
+  status_pub->publish(status_msg);
+  std::this_thread::sleep_for(200ms);
+
   test_node_->approve_state.store(true);
   auto resp = send_state(packml_msgs::msg::State::IDLE);
   ASSERT_NE(resp, nullptr);
-  ASSERT_TRUE(resp->success);
-
-  // Simulate status publication that sets current_state to IDLE
-  // (In real operation, this comes from the packml_status subscription)
-  // For this test, the node's PackmlNodeInterface won't have received the
-  // status message yet, so sending IDLE again will still trigger the callback.
-  // The "already in state" shortcut only works if current_state was updated
-  // via the status subscription.
+  EXPECT_TRUE(resp->success);
+  EXPECT_EQ(test_node_->state_trans_req_count.load(), 0)
+    << "already-in-state shortcut should bypass on_state_trans_req()";
 }
 
 TEST_F(NodeInterfaceTest, StatusSubscriptionTriggersCallback)
 {
-  // Publish a Status message to packml_status that the node is subscribed to
+  // Publish a Status message to packml_status that the node is subscribed to.
+  // Must match the node's status subscription QoS (the manager publishes the status
+  // topic latched: TRANSIENT_LOCAL + RELIABLE); a best-effort publisher would be
+  // QoS-incompatible with the reliable subscription and never deliver.
   auto publisher = node_->create_publisher<packml_msgs::msg::Status>(
-    "packml_status", rclcpp::SensorDataQoS());
+    "packml_status", rclcpp::QoS(1).transient_local().reliable());
 
   packml_msgs::msg::Status status_msg;
   status_msg.state.val = packml_msgs::msg::State::EXECUTE;

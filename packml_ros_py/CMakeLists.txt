@@ -27,6 +27,7 @@ install(TARGETS _packml_bindings
 
 # Generate .pyi type stubs from the compiled pybind11 module at install time.
 install(CODE "
+  set(ENV{PYTHONPATH} \"\${CMAKE_INSTALL_PREFIX}/${PYTHON_INSTALL_DIR}:\$ENV{PYTHONPATH}\")
   execute_process(
     COMMAND ${Python3_EXECUTABLE} -m pybind11_stubgen
       packml_ros_py._packml_bindings
@@ -34,7 +35,7 @@ install(CODE "
     RESULT_VARIABLE _stubgen_result
   )
   if(NOT _stubgen_result EQUAL 0)
-    message(WARNING \"pybind11-stubgen failed (exit \${_stubgen_result}). Type stubs not generated.\")
+    message(WARNING \"pybind11-stubgen failed (exit \${_stubgen_result}). Type stubs not generated. This is non-critical; the module will still function without type hints.\")
   endif()
 ")
 

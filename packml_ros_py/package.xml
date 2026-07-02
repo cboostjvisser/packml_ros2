@@ -13,6 +13,7 @@
   <depend>rclpy</depend>
   <depend>packml_msgs</depend>
   <depend>packml_ros</depend>
+  <depend>packml_sm</depend>
 
   <build_depend>pybind11_vendor</build_depend>
   <build_depend>python3-dev</build_depend>

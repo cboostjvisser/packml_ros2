@@ -48,7 +48,12 @@ protected:
     last_status_state_.store(StateMsg::UNDEFINED);
     status_received_.store(false);
 
-    // Subscribe to packml_status topic (uses SensorDataQoS)
+    // Deliberately mismatched vs. the manager's publisher (TRANSIENT_LOCAL + RELIABLE):
+    // ROS 2 QoS compatibility still connects this (BEST_EFFORT/VOLATILE only requests
+    // less than what's offered), so it observes any FUTURE publish just fine — every
+    // test below triggers a transition first. It would NOT receive a status published
+    // before this subscription existed; see LateJoiningMatchedQosSubscriberGetsRetainedStatus
+    // below for a subscriber using matching QoS that verifies that retained-status behavior.
     status_sub_ = node_->create_subscription<packml_msgs::msg::Status>(
       "packml_status", rclcpp::SensorDataQoS(),
       [this](const packml_msgs::msg::Status & msg) {
@@ -154,4 +159,37 @@ TEST_F(ManagerStatusPublicationTest, StatusTopicReceivesMessages)
     std::this_thread::sleep_for(10ms);
   }
   EXPECT_TRUE(status_received_.load()) << "No status message received on packml_status topic";
+}
+
+// A subscriber using QoS matching the publisher (TRANSIENT_LOCAL + RELIABLE) that joins
+// AFTER a status was already published must immediately receive that RETAINED status,
+// with NO further transition triggered.
+// Expected: the late joiner observes IDLE without the test triggering any new transition.
+TEST_F(ManagerStatusPublicationTest, LateJoiningMatchedQosSubscriberGetsRetainedStatus)
+{
+  // Drive a transition so the manager publishes (and retains) at least one status.
+  auto resp = send_state(packml_msgs::srv::StateChange::Request::RESET);
+  ASSERT_NE(resp, nullptr);
+  ASSERT_TRUE(resp->success);
+  ASSERT_TRUE(wait_for_status(StateMsg::IDLE))
+    << "Setup transition never published — cannot test late-join behavior";
+
+  // NOW create the late-joining subscriber, with QoS matching the manager's publisher.
+  std::atomic<int8_t> late_state{StateMsg::UNDEFINED};
+  std::atomic<bool> late_received{false};
+  auto late_sub = node_->create_subscription<packml_msgs::msg::Status>(
+    "packml_status", rclcpp::QoS(1).transient_local().reliable(),
+    [&late_state, &late_received](const packml_msgs::msg::Status & msg) {
+      late_state.store(msg.state.val);
+      late_received.store(true);
+    });
+
+  // No further transition here — the retained sample must arrive on its own.
+  auto start = std::chrono::steady_clock::now();
+  while (!late_received.load() && std::chrono::steady_clock::now() - start < 2s) {
+    std::this_thread::sleep_for(10ms);
+  }
+  EXPECT_TRUE(late_received.load())
+    << "Late-joining subscriber with matching QoS never received the retained status";
+  EXPECT_EQ(late_state.load(), StateMsg::IDLE);
 }

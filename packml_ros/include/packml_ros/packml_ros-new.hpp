@@ -169,9 +169,6 @@ public:
     sm = packml_sm::StateMachine::continuousCycleSM();
 
     sm->on_state_changed = [this](packml_sm::State value, QString name) {
-      this->changed_prom_ = std::promise<bool>();
-       this->changed_prom_.set_value(true);
-
       RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "State changed to: " << name.toStdString() << "(" << value << ")");
 
       auto handle_value = [](std::string client, packml_msgs::srv::StateTransition::Response::SharedPtr value) {
@@ -206,8 +203,14 @@ public:
       else
       {
         // Set current state
-        // TODO: we shouldn't have to set current_state here. Maybe do something with returning true/false on this function
         current_state = value;
+
+        // When the machine returns to STOPPED (e.g. operator CLEAR), re-arm
+        // the health timeout check so still-silent required Equipment Modules
+        // immediately trigger ABORT again instead of leaving the machine stuck.
+        if (value == packml_sm::State::STOPPED) {
+          rearm_health_timeouts();
+        }
 
         // Publish new state
         publish_status();
@@ -225,15 +228,15 @@ public:
     // Initial mode is configurable via the 'initial_mode' parameter (int).
     // Default is 0 (Invalid/undefined). Users should set this to the desired
     // starting mode value defined in their modes YAML file.
-    node->declare_parameter("initial_mode", 0);
-    auto initial_mode = static_cast<packml_sm::ModeType>(node->get_parameter("initial_mode").as_int());
+    node->declare_parameter(packml_ros::kParamInitialMode, 0);
+    auto initial_mode = static_cast<packml_sm::ModeType>(node->get_parameter(packml_ros::kParamInitialMode).as_int());
 
     // Optional: load per-mode state masks from a YAML configuration file.
     // The 'modes_config_file' parameter should be set to the path of the
     // modes YAML file (the same file used for mode constants generation).
     // States not listed in the mask for a mode default to true (available).
-    node->declare_parameter("modes_config_file", std::string(""));
-    auto modes_config_path = node->get_parameter("modes_config_file").as_string();
+    node->declare_parameter(packml_ros::kParamModesConfigFile, std::string(""));
+    auto modes_config_path = node->get_parameter(packml_ros::kParamModesConfigFile).as_string();
 
     if (!modes_config_path.empty()) {
       auto state_masks = packml_sm::parse_modes_config(modes_config_path);

@@ -231,9 +231,12 @@ void PackmlWidget::setStatusSource(const std::string & status_source, const std:
   }
 
   if (normalized_source == "topic") {
+    // Must match the latched status publisher (TRANSIENT_LOCAL + RELIABLE) so
+    // this panel receives the retained current state on startup, even though it
+    // subscribes after the packml node has already published.
     status_sub_ = nh_->create_subscription<packml_msgs::msg::Status>(
       resolved_topic,
-      rclcpp::SensorDataQoS(),
+      rclcpp::QoS(1).transient_local().reliable(),
       [this](const packml_msgs::msg::Status::SharedPtr msg) {
         std::shared_ptr<packml_msgs::srv::AllStatus::Response> local_status =
           std::make_shared<packml_msgs::srv::AllStatus::Response>();

@@ -25,9 +25,10 @@ from packml_ros_py._packml_bindings import (
     STATE_TRANSITION_SERVICE,
     MODE_TRANSITION_SERVICE,
     STATUS_TOPIC,
+    HEARTBEAT_TOPIC,
 )
 
 __all__ = [
     'PackmlNode', 'State', 'TransitionCmd', 'ModeType',
-    'STATE_TRANSITION_SERVICE', 'MODE_TRANSITION_SERVICE', 'STATUS_TOPIC',
+    'STATE_TRANSITION_SERVICE', 'MODE_TRANSITION_SERVICE', 'STATUS_TOPIC', 'HEARTBEAT_TOPIC',
 ]

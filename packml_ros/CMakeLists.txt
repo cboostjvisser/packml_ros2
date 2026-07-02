@@ -62,6 +62,21 @@ target_link_libraries(
           transition_guard
           Qt5::Core)
 
+add_executable(example_health_demo examples/example_health_demo.cpp)
+
+target_include_directories(
+    example_health_demo
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+           $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
+
+target_link_libraries(
+  example_health_demo
+  PRIVATE rclcpp::rclcpp
+          packml_sm::packml_sm
+          ${packml_msgs_TARGETS}
+          transition_guard
+          Qt5::Core)
+
 add_library(${PROJECT_NAME} INTERFACE)
 
 target_include_directories(
@@ -92,7 +107,7 @@ target_link_libraries(transition_guard PUBLIC packml_sm::packml_sm)
 #install
 install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
 
-install(TARGETS ${PROJECT_NAME} ${PROJECT_NAME}_node example_packml_node transition_guard
+install(TARGETS ${PROJECT_NAME} ${PROJECT_NAME}_node example_packml_node example_health_demo transition_guard
   EXPORT ${PROJECT_NAME}-targets
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
@@ -122,7 +137,14 @@ if(BUILD_TESTING)
     test/test_ros_logger.cpp
     test/test_modes_config.cpp
     test/test_transition_guard.cpp
+    test/test_health_monitor.cpp
+    test/test_health_monitor_integration.cpp
     # test/test_disabled_future_features.cpp
+    # Combined target runs ~50s (heartbeat/health tests use real-time waits, kept
+    # short via short test heartbeat intervals). That's within reach of the ament
+    # 60s default (a slower CI machine could push it over), so bump the timeout for
+    # headroom without over-inflating it.
+    TIMEOUT 120
   )
 
   target_include_directories(

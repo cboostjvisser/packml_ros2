@@ -20,23 +20,34 @@ namespace packml_ros {
 
 TransitionResult TransitionGuard::request_state(packml_sm::State target)
 {
+  std::lock_guard<std::mutex> lk(state_mutex_);   // guard all transition state.
   TransitionResult result;
 
-  // Already in the requested state — no-op success
+  // Already in the requested state — no-op success.
   if (target == current_state_) {
     result.accepted = true;
     result.already_there = true;
     return result;
   }
 
-  // Warn if another transition is in progress
+  // A transition is already in flight: do NOT override it with another.
+  // Reading switching_state_ here distinguishes a benign repeat of the same
+  // in-flight target from a conflicting new target, which is rejected. Either
+  // way we do not re-arm the request.
   if (waiting_for_state_) {
-    result.error = "State change requested while already waiting on a state transition";
-  } else if (waiting_for_mode_) {
-    result.error = "State change requested while a mode change is still active";
+    result.accepted = false;
+    result.error = (target == switching_state_)
+      ? "State transition already in progress"
+      : "Rejected: a state transition is already in progress";
+    return result;
+  }
+  if (waiting_for_mode_) {
+    result.accepted = false;
+    result.error = "Rejected: a mode change is in progress";
+    return result;
   }
 
-  // Accept the transition (current behavior: accept despite warnings)
+  // Accept and record the in-flight target.
   waiting_for_state_ = true;
   switching_state_ = target;
   result.accepted = true;
@@ -45,23 +56,32 @@ TransitionResult TransitionGuard::request_state(packml_sm::State target)
 
 TransitionResult TransitionGuard::request_mode(packml_sm::ModeType target)
 {
+  std::lock_guard<std::mutex> lk(state_mutex_);   // guard all transition state.
   TransitionResult result;
 
-  // Already in the requested mode — no-op success
+  // Already in the requested mode — no-op success.
   if (target == current_mode_) {
     result.accepted = true;
     result.already_there = true;
     return result;
   }
 
-  // Warn if another transition is in progress
+  // A transition is already in flight: do NOT override it. switching_mode_
+  // distinguishes a benign repeat from a conflicting new target.
+  if (waiting_for_mode_) {
+    result.accepted = false;
+    result.error = (target == switching_mode_)
+      ? "Mode change already in progress"
+      : "Rejected: a mode change is already in progress";
+    return result;
+  }
   if (waiting_for_state_) {
-    result.error = "Mode change requested while a state change is in progress";
-  } else if (waiting_for_mode_) {
-    result.error = "Mode change requested while already waiting on a mode transition";
+    result.accepted = false;
+    result.error = "Rejected: a state change is in progress";
+    return result;
   }
 
-  // Accept the transition
+  // Accept and record the in-flight target.
   waiting_for_mode_ = true;
   switching_mode_ = target;
   result.accepted = true;
@@ -70,8 +90,13 @@ TransitionResult TransitionGuard::request_mode(packml_sm::ModeType target)
 
 bool TransitionGuard::on_status_update(packml_sm::State state, packml_sm::ModeType mode)
 {
+  std::lock_guard<std::mutex> lk(state_mutex_);   // guard all transition state.
   bool changed = false;
 
+  // Clear the in-flight flag on ANY observed state change — even one that diverges
+  // from the requested target (e.g. the SM faults to ABORTED). This avoids a stuck
+  // waiting_ flag, which with the reject-while-pending behavior would otherwise deadlock
+  // all future requests.
   if (state != current_state_) {
     current_state_ = state;
     waiting_for_state_ = false;

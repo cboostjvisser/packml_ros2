@@ -18,24 +18,25 @@ This mirrors the C++ PackmlNodeInterface: it exposes the services that the
 PackML manager calls to coordinate state/mode transitions, and subscribes
 to the manager's status topic to track current system state.
 
-The transition validation logic is delegated to the C++ TransitionGuard
-class via pybind11, ensuring single-source-of-truth protocol behavior
-between C++ and Python nodes.
+The shared protocol logic (transition coordination + heartbeat state) is
+delegated to the C++ PackmlNodeProtocol class via pybind11, ensuring
+single-source-of-truth behaviour between C++ and Python nodes.
 """
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 
 from packml_msgs.srv import StateTransition, ModeTransition
-from packml_msgs.msg import Status
+from packml_msgs.msg import Status, NodeHealth, NodeHeartbeat
 
 from packml_ros_py.enums import State
 from packml_ros_py._packml_bindings import (
-    TransitionGuard as _TransitionGuard,
+    PackmlNodeProtocol as _Protocol,
     STATE_TRANSITION_SERVICE,
     MODE_TRANSITION_SERVICE,
     STATUS_TOPIC,
+    HEARTBEAT_TOPIC,
 )
 
 
@@ -66,8 +67,8 @@ class PackmlNode(Node):
     def __init__(self, node_name: str, **kwargs):
         super().__init__(node_name, **kwargs)
 
-        # C++ TransitionGuard — single source of truth for protocol logic
-        self._guard = _TransitionGuard()
+        # C++ PackmlNodeProtocol — single source of truth for shared protocol logic
+        self._protocol = _Protocol()
 
         # Service: ~/packml_state_transition
         self._state_transition_srv = self.create_service(
@@ -83,7 +84,17 @@ class PackmlNode(Node):
             self._handle_mode_transition,
         )
 
-        # Subscription: packml_status (from manager)
+        # Subscription: packml_status (from manager). The manager publishes status
+        # latched (TRANSIENT_LOCAL + RELIABLE) so a node that (re)starts after the
+        # manager has already published immediately receives the current state.
+        # Match that here (parity with the C++ PackmlNodeInterface).
+        status_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        # Sensor-style QoS (best-effort) reused for the heartbeat publisher below.
         sensor_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -93,7 +104,22 @@ class PackmlNode(Node):
             Status,
             STATUS_TOPIC,
             self._handle_status,
-            sensor_qos,
+            status_qos,
+        )
+
+        # --- Heartbeat publisher (mirrors C++ PackmlNodeInterface) ---
+        heartbeat_interval_ms = self.declare_parameter(
+            'heartbeat_interval_ms', 1000).value
+        heartbeat_interval_ms = heartbeat_interval_ms if heartbeat_interval_ms > 0 else 1000
+
+        self._protocol.heartbeat.init(self.get_name(), heartbeat_interval_ms)
+
+        # Sensor-style QoS (best-effort, keep-last) — must match the manager's
+        # heartbeat subscription, or QoS-incompatibility silently drops delivery.
+        self._heartbeat_pub = self.create_publisher(NodeHeartbeat, '~/' + HEARTBEAT_TOPIC, sensor_qos)
+        self._heartbeat_timer = self.create_timer(
+            heartbeat_interval_ms / 1000.0,
+            self._publish_heartbeat,
         )
 
         self.get_logger().info('PackmlNode initialized')
@@ -103,12 +129,12 @@ class PackmlNode(Node):
     @property
     def current_state(self) -> State:
         """Current PackML state as reported by the manager."""
-        return State(int(self._guard.current_state))
+        return State(int(self._protocol.transitions.current_state))
 
     @property
     def current_mode(self) -> int:
         """Current PackML mode as reported by the manager."""
-        return self._guard.current_mode
+        return self._protocol.transitions.current_mode
 
     # ─── Callbacks for subclasses to override ────────────────────────────
 
@@ -133,12 +159,81 @@ class PackmlNode(Node):
         """
         pass
 
+    # ─── Health / heartbeat API ───────────────────────────────────────────
+
+    def get_health_status(self) -> NodeHealth:
+        """Return the current health of this Equipment Module.
+
+        Override in subclass to report real conditions.
+        The base implementation returns HEALTHY / NONE.
+        """
+        msg = NodeHealth()
+        msg.status = NodeHealth.HEALTHY
+        msg.action = NodeHealth.NONE
+        return msg
+
+    def _set_heartbeat_active(self, active: bool) -> None:
+        """Pause or resume heartbeat publishing.
+
+        Intended for derived test/demo Equipment Modules to simulate a crashed or
+        silent node (no heartbeat = timeout in the HealthMonitor) — not part of the
+        public API (mirrors the protected `set_heartbeat_active` in the C++
+        PackmlNodeInterface).
+        """
+        self._protocol.heartbeat.set_active(active)
+
+    def _make_heartbeat(self, health: NodeHealth) -> NodeHeartbeat:
+        """Assemble a NodeHeartbeat with the standard header (node_name, next sequence,
+        interval) and the given health.  Single source for both post_event() and the
+        periodic timer; calls next_sequence() exactly once per published heartbeat
+        (mirrors the C++ PackmlNodeInterface::make_heartbeat)."""
+        hb = NodeHeartbeat()
+        hb.node_name = self._protocol.heartbeat.node_name
+        hb.sequence_number = self._protocol.heartbeat.next_sequence()
+        hb.heartbeat_interval_ms = self._protocol.heartbeat.interval_ms
+        hb.health = health
+        return hb
+
+    def post_event(self, health: NodeHealth) -> None:
+        """Immediately publish a heartbeat with the given health state.
+
+        Bypasses the periodic timer.  Use for safety-critical events (e.g. E-stop)
+        where waiting up to heartbeat_interval_ms for the next tick is unacceptable.
+        The event is *latched*: the periodic publisher repeats this health on every
+        subsequent tick (instead of calling get_health_status()), so a transient
+        getter cannot flap the alarm/state.  Posting a healthy/NONE event clears it.
+        """
+        if health.action == NodeHealth.NONE:
+            self._protocol.heartbeat.clear_latch()
+        else:
+            self._protocol.heartbeat.set_latch(
+                health.status, health.action, health.error_code, health.message)
+        self._heartbeat_pub.publish(self._make_heartbeat(health))
+
+    def _publish_heartbeat(self) -> None:
+        """Periodic heartbeat callback — called by the internal timer."""
+        if not self._protocol.heartbeat.is_active:
+            return
+        # One atomic snapshot of the latch (no torn read vs a concurrent post_event),
+        # matching the C++ periodic publisher.
+        latch = self._protocol.heartbeat.latch_snapshot()
+        if latch.active:
+            # A post_event() fault is latched — repeat it, don't poll the getter.
+            health = NodeHealth()
+            health.status = latch.status
+            health.action = latch.action
+            health.error_code = latch.error_code
+            health.message = latch.message
+        else:
+            health = self.get_health_status()
+        self._heartbeat_pub.publish(self._make_heartbeat(health))
+
     # ─── Internal service handlers ───────────────────────────────────────
 
     def _handle_state_transition(self, request, response):
         """Handle ~/packml_state_transition service call from manager."""
         target = State(request.state.val)
-        result = self._guard.request_state(target)
+        result = self._protocol.transitions.request_state(target)
 
         if result.already_there:
             self.get_logger().info(f'Already in state: {target.name}')
@@ -163,7 +258,7 @@ class PackmlNode(Node):
     def _handle_mode_transition(self, request, response):
         """Handle ~/packml_mode_transition service call from manager."""
         target_mode = int(request.mode.val)
-        result = self._guard.request_mode(target_mode)
+        result = self._protocol.transitions.request_mode(target_mode)
 
         if result.already_there:
             self.get_logger().info(f'Already in mode: {target_mode}')
@@ -187,7 +282,7 @@ class PackmlNode(Node):
 
     def _handle_status(self, msg: Status):
         """Handle packml_status subscription message from manager."""
-        changed = self._guard.on_status_update(State(msg.state.val), int(msg.mode.val))
+        changed = self._protocol.transitions.on_status_update(State(msg.state.val), int(msg.mode.val))
 
         if changed:
             self.get_logger().debug(

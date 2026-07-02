@@ -14,16 +14,39 @@
 
 """Unit tests for PackmlNode class (ROS2 node-level tests)."""
 
+import time
+
 import pytest
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
+from rclpy.parameter import Parameter
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 
 from packml_msgs.srv import StateTransition, ModeTransition
-from packml_msgs.msg import Status, State as StateMsg, Mode as ModeMsg
+from packml_msgs.msg import Status, State as StateMsg, Mode as ModeMsg, NodeHealth, NodeHeartbeat
 
 from packml_ros_py import PackmlNode, State
-from packml_ros_py import STATE_TRANSITION_SERVICE, MODE_TRANSITION_SERVICE, STATUS_TOPIC
+from packml_ros_py import (
+    STATE_TRANSITION_SERVICE, MODE_TRANSITION_SERVICE, STATUS_TOPIC, HEARTBEAT_TOPIC,
+)
 import packml_modes
+
+# Latched status QoS — matches PackmlNode's status subscription (RELIABLE +
+# TRANSIENT_LOCAL). A best-effort/volatile publisher would be QoS-incompatible
+# with that subscription and never deliver.
+_STATUS_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+)
+
+# Heartbeat QoS — matches PackmlNode's heartbeat publisher (BEST_EFFORT, depth 5).
+_HEARTBEAT_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=5,
+)
 
 
 @pytest.fixture(scope='module', autouse=True)
@@ -55,6 +78,27 @@ def executor(packml_node, client_node):
     """Create an executor with both nodes."""
     exec_ = SingleThreadedExecutor()
     exec_.add_node(packml_node)
+    exec_.add_node(client_node)
+    yield exec_
+    exec_.shutdown()
+
+
+@pytest.fixture
+def fast_packml_node():
+    """PackmlNode with a short heartbeat interval so periodic-publish tests run quickly."""
+    node = PackmlNode(
+        'test_packml_node_fast',
+        parameter_overrides=[Parameter('heartbeat_interval_ms', value=50)],
+    )
+    yield node
+    node.destroy_node()
+
+
+@pytest.fixture
+def fast_executor(fast_packml_node, client_node):
+    """Create an executor with the fast-heartbeat node and the client helper node."""
+    exec_ = SingleThreadedExecutor()
+    exec_.add_node(fast_packml_node)
     exec_.add_node(client_node)
     yield exec_
     exec_.shutdown()
@@ -111,7 +155,7 @@ class TestStateTransitionService:
     def test_already_in_state(self, packml_node, client_node, executor):
         """If node is already in the requested state, return success immediately."""
         # Set state to IDLE via the guard's status update
-        packml_node._guard.on_status_update(State.IDLE, 0)
+        packml_node._protocol.transitions.on_status_update(State.IDLE, 0)
 
         state_client = client_node.create_client(
             StateTransition,
@@ -187,7 +231,7 @@ class TestModeTransitionService:
 
     def test_already_in_mode(self, packml_node, client_node, executor):
         """If node is already in the requested mode, return success."""
-        packml_node._guard.on_status_update(State.UNDEFINED, packml_modes.MAINTENANCE)
+        packml_node._protocol.transitions.on_status_update(State.UNDEFINED, packml_modes.MAINTENANCE)
 
         mode_client = client_node.create_client(
             ModeTransition,
@@ -244,7 +288,7 @@ class TestStatusSubscription:
 
     def test_status_updates_state(self, packml_node, client_node, executor):
         """Verify status topic updates internal state."""
-        pub = client_node.create_publisher(Status, STATUS_TOPIC, 10)
+        pub = client_node.create_publisher(Status, STATUS_TOPIC, _STATUS_QOS)
         executor.spin_once(timeout_sec=0.1)
 
         msg = Status()
@@ -273,7 +317,7 @@ class TestStatusSubscription:
         tracking_node = TrackingNode()
         executor.add_node(tracking_node)
 
-        pub = client_node.create_publisher(Status, STATUS_TOPIC, 10)
+        pub = client_node.create_publisher(Status, STATUS_TOPIC, _STATUS_QOS)
         executor.spin_once(timeout_sec=0.1)
 
         msg = Status()
@@ -295,9 +339,9 @@ class TestStatusSubscription:
         original_cb = packml_node.on_packml_status_changed
         packml_node.on_packml_status_changed = lambda s: callback_count.__setitem__(0, callback_count[0] + 1)
 
-        packml_node._guard.on_status_update(State.IDLE, packml_modes.PRODUCTION)
+        packml_node._protocol.transitions.on_status_update(State.IDLE, packml_modes.PRODUCTION)
 
-        pub = client_node.create_publisher(Status, STATUS_TOPIC, 10)
+        pub = client_node.create_publisher(Status, STATUS_TOPIC, _STATUS_QOS)
         executor.spin_once(timeout_sec=0.1)
 
         # Publish same state
@@ -348,3 +392,172 @@ class TestSubclassing:
         assert received_states == [State.STARTING]
 
         custom_node.destroy_node()
+
+
+class TestHeartbeatPublishing:
+    """Test the periodic NodeHeartbeat publisher."""
+
+    def test_heartbeat_published_periodically(self, fast_packml_node, client_node, fast_executor):
+        """The node publishes NodeHeartbeat on its own topic at heartbeat_interval_ms.
+        Expected: at least one heartbeat is received, carrying the node's own name and
+        the default get_health_status() result (HEALTHY / NONE)."""
+        received = []
+        client_node.create_subscription(
+            NodeHeartbeat, f'/test_packml_node_fast/{HEARTBEAT_TOPIC}',
+            received.append, _HEARTBEAT_QOS)
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and len(received) < 1:
+            fast_executor.spin_once(timeout_sec=0.1)
+
+        assert len(received) >= 1
+        assert received[0].node_name == 'test_packml_node_fast'
+        assert received[0].health.status == NodeHealth.HEALTHY
+        assert received[0].health.action == NodeHealth.NONE
+
+    def test_heartbeat_sequence_increments(self, fast_packml_node, client_node, fast_executor):
+        """Successive heartbeats carry a strictly increasing sequence_number.
+        Expected: at least 3 heartbeats received, each with a sequence_number greater
+        than the previous one."""
+        received = []
+        client_node.create_subscription(
+            NodeHeartbeat, f'/test_packml_node_fast/{HEARTBEAT_TOPIC}',
+            received.append, _HEARTBEAT_QOS)
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and len(received) < 3:
+            fast_executor.spin_once(timeout_sec=0.1)
+
+        assert len(received) >= 3
+        for i in range(1, len(received)):
+            assert received[i].sequence_number > received[i - 1].sequence_number
+
+
+class TestPostEvent:
+    """Test post_event() immediate publish and latch behavior."""
+
+    def test_post_event_publishes_immediately(self, packml_node, client_node, executor):
+        """post_event() publishes a heartbeat right away, without waiting for the
+        periodic timer (default interval 1000ms). Expected: the published health
+        matches the posted fault, not the default get_health_status()."""
+        received = []
+        client_node.create_subscription(
+            NodeHeartbeat, f'/test_packml_node/{HEARTBEAT_TOPIC}',
+            received.append, _HEARTBEAT_QOS)
+        executor.spin_once(timeout_sec=0.1)
+
+        fault = NodeHealth()
+        fault.status = NodeHealth.ERROR
+        fault.action = NodeHealth.ABORT
+        fault.error_code = 42
+        fault.message = 'test fault'
+        packml_node.post_event(fault)
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not received:
+            executor.spin_once(timeout_sec=0.1)
+
+        assert len(received) >= 1
+        assert received[0].health.status == NodeHealth.ERROR
+        assert received[0].health.action == NodeHealth.ABORT
+        assert received[0].health.error_code == 42
+
+    def test_post_event_latches_and_repeats(self, fast_packml_node, client_node, fast_executor):
+        """After post_event() with an actionable fault, the periodic publisher must
+        repeat the LATCHED health on every subsequent tick instead of calling
+        get_health_status() again. Expected: several heartbeats published AFTER the
+        fault all carry the latched health (a periodic tick that already fired before
+        the fault would correctly show healthy, so it must not be counted here)."""
+        received = []
+        client_node.create_subscription(
+            NodeHeartbeat, f'/test_packml_node_fast/{HEARTBEAT_TOPIC}',
+            received.append, _HEARTBEAT_QOS)
+
+        # Let any already-in-flight periodic tick be delivered and recorded as the
+        # watermark, so it can't be mistaken for a post-fault heartbeat below.
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not received:
+            fast_executor.spin_once(timeout_sec=0.1)
+        watermark = received[-1].sequence_number if received else 0
+
+        fault = NodeHealth()
+        fault.status = NodeHealth.ERROR
+        fault.action = NodeHealth.HOLD
+        fault.error_code = 7
+        fast_packml_node.post_event(fault)
+
+        deadline = time.monotonic() + 2.0
+        while (time.monotonic() < deadline and
+               sum(1 for m in received if m.sequence_number > watermark) < 3):
+            fast_executor.spin_once(timeout_sec=0.1)
+
+        after_fault = [m for m in received if m.sequence_number > watermark]
+        assert len(after_fault) >= 3
+        for msg in after_fault:
+            assert msg.health.action == NodeHealth.HOLD
+            assert msg.health.error_code == 7
+
+    def test_post_event_clear_resumes_getter(self, client_node):
+        """Posting a healthy/NONE event clears the latch, so subsequent heartbeats
+        resume calling get_health_status() instead of repeating the old fault.
+        Expected: after the clear, published heartbeats reflect the node's overridden
+        get_health_status() (DEGRADED/WARN), not the previously-latched fault."""
+        class OverriddenNode(PackmlNode):
+            def __init__(self):
+                super().__init__(
+                    'test_packml_node_override',
+                    parameter_overrides=[Parameter('heartbeat_interval_ms', value=50)])
+
+            def get_health_status(self):
+                h = NodeHealth()
+                h.status = NodeHealth.DEGRADED
+                h.action = NodeHealth.WARN
+                h.message = 'overridden'
+                return h
+
+        node = OverriddenNode()
+        exec_ = SingleThreadedExecutor()
+        exec_.add_node(node)
+        exec_.add_node(client_node)
+
+        try:
+            received = []
+            client_node.create_subscription(
+                NodeHeartbeat, f'/test_packml_node_override/{HEARTBEAT_TOPIC}',
+                received.append, _HEARTBEAT_QOS)
+
+            fault = NodeHealth()
+            fault.status = NodeHealth.ERROR
+            fault.action = NodeHealth.ABORT
+            node.post_event(fault)
+
+            # Wait until the latched fault itself has been observed before clearing
+            # it, then use its sequence_number as the watermark for "after the clear".
+            deadline = time.monotonic() + 1.0
+            while (time.monotonic() < deadline and
+                   not any(m.health.action == NodeHealth.ABORT for m in received)):
+                exec_.spin_once(timeout_sec=0.1)
+            assert any(m.health.action == NodeHealth.ABORT for m in received), (
+                "latched fault heartbeat was never observed")
+            watermark = received[-1].sequence_number
+
+            clear = NodeHealth()
+            clear.action = NodeHealth.NONE
+            node.post_event(clear)
+
+            deadline = time.monotonic() + 2.0
+            while (time.monotonic() < deadline and
+                   sum(1 for m in received if m.sequence_number > watermark) < 3):
+                exec_.spin_once(timeout_sec=0.1)
+
+            # The clear event's own immediate publish (action=NONE) isn't a periodic
+            # tick; check only the PERIODIC heartbeats published after it.
+            after_clear = [m for m in received if m.sequence_number > watermark]
+            periodic_after_clear = [m for m in after_clear if m.health.action != NodeHealth.NONE]
+            assert len(periodic_after_clear) >= 2
+            for msg in periodic_after_clear:
+                assert msg.health.action == NodeHealth.WARN
+                assert msg.health.status == NodeHealth.DEGRADED
+        finally:
+            exec_.shutdown()
+            node.destroy_node()
