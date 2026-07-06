@@ -886,9 +886,10 @@ TEST_F(AlarmCallbackTest, AlarmRaisedOnFirstError)
   ASSERT_EQ(alarm_calls_.size(), 1u);
   EXPECT_TRUE(alarm_calls_[0].trigger);
   EXPECT_EQ(alarm_calls_[0].node_name, "motor");
-  EXPECT_EQ(alarm_calls_[0].health.error_code, 101);
-  EXPECT_EQ(alarm_calls_[0].health.action, NodeHealth::HOLD);
-  EXPECT_EQ(alarm_calls_[0].health.message, "over-temp");
+  EXPECT_EQ(alarm_calls_[0].error_code, 101);
+  EXPECT_EQ(alarm_calls_[0].severity, NodeHealth::HOLD);
+  EXPECT_EQ(alarm_calls_[0].message, "over-temp");
+  EXPECT_FALSE(alarm_calls_[0].is_timeout);
 }
 
 // A WARN heartbeat fires the alarm "raise" callback (observer-only) but fires no SM action.
@@ -897,13 +898,13 @@ TEST_F(AlarmCallbackTest, AlarmRaisedForWarn)
   inject("motor", NodeHealth::DEGRADED, NodeHealth::WARN, 100);
   ASSERT_EQ(alarm_calls_.size(), 1u);
   EXPECT_TRUE(alarm_calls_[0].trigger);
-  EXPECT_EQ(alarm_calls_[0].health.action, NodeHealth::WARN);
+  EXPECT_EQ(alarm_calls_[0].severity, NodeHealth::WARN);
   // WARN does not fire fire_action_ callback
   EXPECT_TRUE(action_calls_.empty());
 }
 
 // Returning to HEALTHY after an error fires an alarm "clear" callback (trigger=false)
-// that preserves the original error code.
+// that preserves the original severity and error code (not reset to a neutral value).
 TEST_F(AlarmCallbackTest, AlarmClearedOnHealthy)
 {
   inject("motor", NodeHealth::ERROR, NodeHealth::HOLD, 101);
@@ -913,7 +914,9 @@ TEST_F(AlarmCallbackTest, AlarmClearedOnHealthy)
   ASSERT_EQ(alarm_calls_.size(), 2u);
   EXPECT_FALSE(alarm_calls_[1].trigger);
   EXPECT_EQ(alarm_calls_[1].node_name, "motor");
-  EXPECT_EQ(alarm_calls_[1].health.error_code, 101);  // previous error code preserved in clear
+  EXPECT_EQ(alarm_calls_[1].severity, NodeHealth::HOLD);    // preserved, not zeroed
+  EXPECT_EQ(alarm_calls_[1].error_code, 101);               // preserved, not zeroed
+  EXPECT_FALSE(alarm_calls_[1].is_timeout);                 // a node-reported alarm, not a timeout
 }
 
 // After one raise and one clear, further HEALTHY heartbeats fire no additional alarm callbacks.
@@ -974,8 +977,8 @@ TEST_F(AlarmCallbackTest, EscalationFiresUpdatedAlarm)
   inject("motor", NodeHealth::ERROR, NodeHealth::ABORT, 200);
   ASSERT_EQ(alarm_calls_.size(), 2u);
   EXPECT_TRUE(alarm_calls_[1].trigger);
-  EXPECT_EQ(alarm_calls_[1].health.action, NodeHealth::ABORT);
-  EXPECT_EQ(alarm_calls_[1].health.error_code, 200);
+  EXPECT_EQ(alarm_calls_[1].severity, NodeHealth::ABORT);
+  EXPECT_EQ(alarm_calls_[1].error_code, 200);
 }
 
 // After a timeout, an operator clear + re-arm re-fires ABORT (so the machine cannot
@@ -992,6 +995,7 @@ TEST_F(AlarmCallbackTest, RearmRefiresAbortWithoutDuplicateRaiseAlarm)
   EXPECT_EQ(action_calls_[0], NodeHealth::ABORT);
   ASSERT_EQ(alarm_calls_.size(), 1u);
   EXPECT_TRUE(alarm_calls_[0].trigger);
+  EXPECT_TRUE(alarm_calls_[0].is_timeout);
 
   // A repeat check while still timed out does nothing (already flagged).
   monitor_->check_timeouts();
@@ -1008,6 +1012,27 @@ TEST_F(AlarmCallbackTest, RearmRefiresAbortWithoutDuplicateRaiseAlarm)
   EXPECT_EQ(action_calls_[1], NodeHealth::ABORT);
   // ...but the alarm must NOT be re-raised with no clear between.
   EXPECT_EQ(alarm_calls_.size(), 1u);
+}
+
+// When a timed-out node resumes with a healthy heartbeat, the clear event for that
+// alarm carries is_timeout=true — it clears what was a manager-synthesized timeout
+// alarm, not a node-reported one, and a consumer shouldn't have to correlate back to
+// the original raise event to know that.
+TEST_F(AlarmCallbackTest, ClearAfterTimeoutCarriesIsTimeout)
+{
+  monitor_->register_required_node("motor", 3.0, /*startup_ms=*/1);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  monitor_->check_timeouts();
+  ASSERT_EQ(alarm_calls_.size(), 1u);
+  EXPECT_TRUE(alarm_calls_[0].trigger);
+  EXPECT_TRUE(alarm_calls_[0].is_timeout);
+
+  // Node resumes with a healthy heartbeat — clears the timeout alarm.
+  inject("motor", NodeHealth::HEALTHY, NodeHealth::NONE);
+  ASSERT_EQ(alarm_calls_.size(), 2u);
+  EXPECT_FALSE(alarm_calls_[1].trigger);
+  EXPECT_TRUE(alarm_calls_[1].is_timeout);
+  EXPECT_EQ(alarm_calls_[1].severity, NodeHealth::ABORT);  // preserved from the timeout raise
 }
 
 // A HealthMonitor constructed without an on_alarm callback processes error and clear

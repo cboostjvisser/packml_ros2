@@ -707,18 +707,21 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
     }
     if (ev.trigger) {
       RCLCPP_WARN(rclcpp::get_logger("packml_ros"),
-        "[Alarm] RAISED  node='%s' id=%d value=%d: %s",
-        ev.node_name.c_str(), ev.health.error_code, ev.health.action, ev.health.message.c_str());
+        "[Alarm] RAISED  node='%s' id=%d severity=%d%s: %s",
+        ev.node_name.c_str(), ev.error_code, ev.severity,
+        ev.is_timeout ? " (timeout)" : "", ev.message.c_str());
     } else {
       RCLCPP_INFO(rclcpp::get_logger("packml_ros"),
-        "[Alarm] CLEARED node='%s' id=%d",
-        ev.node_name.c_str(), ev.health.error_code);
+        "[Alarm] CLEARED node='%s' id=%d", ev.node_name.c_str(), ev.error_code);
     }
     packml_msgs::msg::Alarm msg;
-    msg.trigger   = ev.trigger;
-    msg.stamp     = node_->get_clock()->now();
-    msg.node_name = ev.node_name;
-    msg.health    = ev.health;
+    msg.trigger    = ev.trigger;
+    msg.stamp      = node_->get_clock()->now();
+    msg.node_name  = ev.node_name;
+    msg.severity   = static_cast<uint8_t>(ev.severity);
+    msg.error_code = static_cast<uint32_t>(ev.error_code);
+    msg.is_timeout = ev.is_timeout;
+    msg.message    = ev.message;
     alarm_pub_->publish(msg);
   }
 

@@ -54,12 +54,18 @@
 #include <packml_msgs/msg/node_heartbeat.hpp>
 
 /// Alarm event fired by HealthMonitor for every health-state change on a PackML Node
-/// (Equipment Module).  All transitions — including WARN and clears — produce an AlarmEvent. 
+/// (Equipment Module).  All transitions — including WARN and clears — produce an AlarmEvent.
+/// Flat and self-contained (mirrors Alarm.msg) — no field is reread from NodeHealth.
 struct AlarmEvent
 {
-  bool trigger{true};                        ///< true = alarm raised/updated, false = cleared
+  bool trigger{true};              ///< true = alarm raised/updated, false = cleared
   std::string node_name;
-  packml_msgs::msg::NodeHealth health;       ///< snapshot; health.error_code=0 → heartbeat timeout
+  int32_t severity{0};             ///< WARN..ABORT (NodeHealth::action levels); on clear, the
+                                    ///< severity the alarm had before it cleared.
+  int32_t error_code{0};           ///< user-defined condition id; 0 = unspecified, not a sentinel.
+  bool is_timeout{false};          ///< true for a manager-synthesized heartbeat-timeout alarm,
+                                    ///< and for the event that clears one.
+  std::string message;             ///< empty on clear.
 };
 
 /// Pure C++ health monitor for PackML Equipment Modules.
@@ -287,18 +293,19 @@ public:
           node.last_action = NodeHealth::ABORT;
           node.last_status = NodeHealth::ERROR;
           node.timeout_alarm_active = true;
+          node.current_alarm_is_timeout = true;
           any_timeout = true;  // ABORT re-fires every cycle (incl. after re-arm); fire_action is idempotent.
 
           // Raise the alarm only on the false->true edge: re-arm re-fires
           // ABORT but must not spam duplicate "raise" alarms with no clear between.
           if (on_alarm_ && first_raise) {
             AlarmEvent ev;
-            ev.trigger           = true;
-            ev.node_name         = name;
-            ev.health.error_code = 0;  // 0 = heartbeat-timeout alarm
-            ev.health.action     = NodeHealth::ABORT;
-            ev.health.status     = NodeHealth::ERROR;
-            ev.health.message    = never_seen
+            ev.trigger    = true;
+            ev.node_name  = name;
+            ev.severity   = NodeHealth::ABORT;
+            ev.error_code = 0;
+            ev.is_timeout = true;
+            ev.message    = never_seen
               ? "Required node never reported a heartbeat — check the node name and that it is running"
               : "Heartbeat timeout — node stopped responding";
             node.last_alarm_id = 0;
@@ -411,7 +418,10 @@ private:
 
     bool timed_out{false};
     bool ever_seen{false};
-    bool timeout_alarm_active{false};    // F7: dedup timeout RAISE alarms across re-arm cycles
+    bool timeout_alarm_active{false};    // dedup timeout RAISE alarms across re-arm cycles
+    bool current_alarm_is_timeout{false};  // true while the active alarm is manager-synthesized
+                                            // (from a timeout) rather than node-reported; carried
+                                            // onto the event that eventually clears it.
   };
 
   // -----------------------------------------------------------------------
@@ -562,23 +572,26 @@ private:
       // Fire if new alarm, severity changed, or error code changed.
       if (!was_alarmed || prev_action != cur_action || prev_alarm_id != cur_id) {
         AlarmEvent ev;
-        ev.trigger               = true;
-        ev.node_name             = node_name;
-        ev.health.error_code = cur_id;
-        ev.health.action    = cur_action;
-        ev.health.status    = msg.health.status;
-        ev.health.message   = msg.health.message;
+        ev.trigger    = true;
+        ev.node_name  = node_name;
+        ev.severity   = cur_action;
+        ev.error_code = cur_id;
+        ev.is_timeout = false;  // any heartbeat-driven raise is node-reported, not synthesized
+        ev.message    = msg.health.message;
         node.last_alarm_id = cur_id;
+        node.current_alarm_is_timeout = false;
         return ev;
       }
     } else if (was_alarmed) {
-      // Alarm cleared.
+      // Alarm cleared. severity/error_code preserve what the alarm was, not a neutral
+      // value — a consumer sees "the HOLD alarm (id 101) cleared", not "a 0 alarm cleared".
       AlarmEvent ev;
-      ev.trigger               = false;
-      ev.node_name             = node_name;
-      ev.health.error_code = prev_alarm_id;
-      ev.health.status    = NodeHealth::HEALTHY;
-      ev.health.action    = NodeHealth::NONE;
+      ev.trigger    = false;
+      ev.node_name  = node_name;
+      ev.severity   = prev_action;
+      ev.error_code = prev_alarm_id;
+      ev.is_timeout = node.current_alarm_is_timeout;
+      node.current_alarm_is_timeout = false;
       node.last_alarm_id = 0;
       return ev;
     }

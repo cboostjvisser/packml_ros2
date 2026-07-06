@@ -470,11 +470,13 @@ TEST_F(HealthIntegrationTest, AlarmClearPublishedOnFaultClear)
   bool found_clear = false;
   for (const auto & a : alarms) {
     if (a.node_name == "sim_em_a") {
+      EXPECT_FALSE(a.is_timeout) << "a node-reported HOLD must not be flagged as a timeout alarm";
       if (a.trigger) {
         found_raise = true;
-        EXPECT_EQ(a.health.action, NodeHealth::HOLD);
+        EXPECT_EQ(a.severity, NodeHealth::HOLD);
       } else {
         found_clear = true;
+        EXPECT_EQ(a.severity, NodeHealth::HOLD) << "clear should preserve the severity that cleared";
       }
     }
   }
