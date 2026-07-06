@@ -29,7 +29,10 @@
 #include "packml_ros/packml_ros-new.hpp"
 #include "packml_msgs/srv/state_change.hpp"
 #include "packml_msgs/srv/state_transition.hpp"
+#include "packml_msgs/srv/mode_change.hpp"
 #include "packml_msgs/srv/mode_transition.hpp"
+#include "packml_msgs/msg/alarm.hpp"
+#include "packml_msgs/msg/state.hpp"
 #include "test_helpers.hpp"
 
 using namespace std::chrono_literals;
@@ -134,13 +137,18 @@ protected:
   std::atomic<int8_t> mode_received_;
 };
 
-TEST_F(ManagerClientFanoutTest, DISABLED_StateTransitionFannedOutToChild)
+// A state transition on the manager is fanned out to every registered child's
+// packml_state_transition service. Expected: after RESET the child receives a state
+// value (RESETTING or IDLE). Re-enabled: it was disabled while the fan-out blocked
+// the Qt thread and manually spun per-client executors (which conflicted with the
+// test's executor); the fan-out is asynchronous now, so the requests are plain
+// service calls served by the test's executor.
+TEST_F(ManagerClientFanoutTest, StateTransitionFannedOutToChild)
 {
-  // NOTE: This test is disabled due to Qt thread + ROS executor interaction.
-  // The on_state_changed callback runs on the Qt thread and calls
-  // wait_all_futures(), which requires spinning the client's callback group.
-  // This conflicts with the test's executor threading model.
-  // This should be tested via launch_testing integration test instead.
+  // The activation-time STOPPED fan-out during SetUp may already have delivered a
+  // state to the child — discard it, so this test can only pass on the fan-out the
+  // RESET below actually triggers.
+  state_received_.store(0);
 
   // SM starts in STOPPED; RESET should trigger on_state_changed, which calls child's state_transition
   auto resp = send_state(packml_msgs::srv::StateChange::Request::RESET);
@@ -152,16 +160,52 @@ TEST_F(ManagerClientFanoutTest, DISABLED_StateTransitionFannedOutToChild)
   while (state_received_.load() == 0 && std::chrono::steady_clock::now() - start < 3s) {
     std::this_thread::sleep_for(10ms);
   }
-  // Child should have received a state value (RESETTING or IDLE)
-  EXPECT_NE(state_received_.load(), 0) << "Child never received state transition";
+  // The child must have received specifically the RESET-driven state, not just anything.
+  const auto received = state_received_.load();
+  EXPECT_TRUE(received == packml_msgs::msg::State::RESETTING ||
+              received == packml_msgs::msg::State::IDLE)
+    << "Child never received the RESET-driven state transition (got "
+    << static_cast<int>(received) << ")";
 }
 
-// F19 regression: on_change_mode must not hang forever if a registered child's
-// mode_transition service accepts the request but never responds within the wait
-// window (simulates a hung Equipment Module). wait_all_futures() has a 5s bounded
-// wait; expected: the manager returns success=false within that bound instead of
-// blocking indefinitely (which would also starve the health-timeout timer).
-TEST_F(ManagerClientFanoutTest, UnresponsiveChildModeChangeFailsWithinTimeout)
+// A mode change on the manager is fanned out to every registered child's
+// packml_mode_transition service. Expected: after ~/changeMode from IDLE, the child's
+// mode service receives the requested mode value. (Without this, mode fan-out
+// delivery would have no direct coverage at all — the alarm tests only cover its
+// failure paths.)
+TEST_F(ManagerClientFanoutTest, ModeTransitionFannedOutToChild)
+{
+  // Drive to IDLE first — mode changes are only valid from IDLE.
+  auto resp = send_state(packml_msgs::srv::StateChange::Request::RESET);
+  ASSERT_NE(resp, nullptr);
+  ASSERT_TRUE(resp->success) << "Setup RESET failed: " << resp->message;
+  std::this_thread::sleep_for(500ms);  // let RESETTING -> IDLE settle
+
+  auto mode_client = node_->create_client<packml_msgs::srv::ModeChange>(
+    node_name_ + "/" + packml_ros::kChangeModeService);
+  ASSERT_TRUE(mode_client->wait_for_service(5s));
+
+  mode_received_.store(0);
+  auto req = std::make_shared<packml_msgs::srv::ModeChange::Request>();
+  req->mode.val = 3;
+  auto future = mode_client->async_send_request(req);
+  ASSERT_EQ(future.wait_for(5s), std::future_status::ready);
+  ASSERT_TRUE(future.get()->success);
+
+  auto start = std::chrono::steady_clock::now();
+  while (mode_received_.load() != 3 && std::chrono::steady_clock::now() - start < 3s) {
+    std::this_thread::sleep_for(10ms);
+  }
+  EXPECT_EQ(mode_received_.load(), 3) << "Child never received the mode transition";
+}
+
+// A registered child whose mode_transition service accepts the request but never
+// responds within the fan-out deadline (simulates a hung Equipment Module) must not
+// block the manager: the ~/changeMode response arrives promptly with success=true
+// (the state machine accepted; acks are asynchronous), and the missing
+// acknowledgement is surfaced out-of-band as a WARN Alarm on packml_alarms naming
+// the silent child.
+TEST_F(ManagerClientFanoutTest, UnresponsiveChildModeChangeDoesNotBlockService)
 {
   auto slow_name = packml_ros_test::unique_node_name("mgr_slow_child_test");
   const std::string slow_child_name = "slow_child_module";
@@ -172,8 +216,7 @@ TEST_F(ManagerClientFanoutTest, UnresponsiveChildModeChangeFailsWithinTimeout)
   auto slow_child_node = rclcpp::Node::make_shared(slow_child_name);
 
   // Responds immediately to state transitions (needed to drive to IDLE below —
-  // mode changes are only valid from IDLE — and to keep the RESET's own Qt-thread
-  // fanout from adding unrelated delay to this test).
+  // mode changes are only valid from IDLE).
   auto slow_state_srv = slow_child_node->create_service<packml_msgs::srv::StateTransition>(
     slow_child_name + "/" + packml_ros::kStateTransitionService,
     [](const std::shared_ptr<packml_msgs::srv::StateTransition::Request>,
@@ -181,8 +224,8 @@ TEST_F(ManagerClientFanoutTest, UnresponsiveChildModeChangeFailsWithinTimeout)
       res->success = true;
     });
 
-  // Accepts the mode-change request (so it IS in wait_all_futures' futures map) but
-  // never returns within the manager's wait window — simulates a hung Equipment Module.
+  // Accepts the mode-change request but does not respond until well past the
+  // manager's fan-out deadline — simulates a hung Equipment Module.
   auto slow_mode_srv = slow_child_node->create_service<packml_msgs::srv::ModeTransition>(
     slow_child_name + "/" + packml_ros::kModeTransitionService,
     [](const std::shared_ptr<packml_msgs::srv::ModeTransition::Request>,
@@ -197,12 +240,10 @@ TEST_F(ManagerClientFanoutTest, UnresponsiveChildModeChangeFailsWithinTimeout)
   auto slow_mode_client = slow_node->create_client<packml_msgs::srv::ModeChange>(
     slow_name + "/" + packml_ros::kChangeModeService);
 
-  // Each node gets its OWN dedicated spinner thread (like every other multi-node test
-  // in this suite) — NOT the fixture's shared exec_. on_change_mode blocks its calling
-  // thread for up to 5s inside wait_all_futures; sharing one single-threaded exec_
-  // between the manager and the child would starve the child's own callback from ever
-  // running concurrently (the same class of issue that disabled the state-fanout test
-  // above), making this test measure executor contention instead of the real timeout.
+  // Each node gets its OWN dedicated spinner thread: the child's 6s-sleeping service
+  // callback must not stall the manager's executor, which has to keep delivering the
+  // deadline timer and any response callbacks for this test to measure the real
+  // fan-out behavior rather than executor contention.
   packml_ros_test::SpinHelper slow_spin(slow_node);
   packml_ros_test::SpinHelper slow_child_spin(slow_child_node);
 
@@ -217,15 +258,144 @@ TEST_F(ManagerClientFanoutTest, UnresponsiveChildModeChangeFailsWithinTimeout)
   ASSERT_TRUE(state_future.get()->success) << "Setup RESET failed";
   std::this_thread::sleep_for(500ms);  // let RESETTING -> IDLE settle
 
+  // Watch the alarm topic for the fan-out failure report (subscribe before acting;
+  // volatile QoS deliberately ignores any earlier retained alarms). Wait for the
+  // subscription to match the manager's alarm publisher — matching is asynchronous,
+  // and an alarm published before it completes would be lost to a volatile reader.
+  std::mutex alarms_mutex;
+  std::vector<packml_msgs::msg::Alarm> alarms;
+  auto alarm_sub = slow_node->create_subscription<packml_msgs::msg::Alarm>(
+    packml_ros::kAlarmsTopic, rclcpp::QoS(50),
+    [&alarms, &alarms_mutex](packml_msgs::msg::Alarm::SharedPtr msg) {
+      std::lock_guard<std::mutex> lk(alarms_mutex);
+      alarms.push_back(*msg);
+    });
+  {
+    const auto match_deadline = std::chrono::steady_clock::now() + 2s;
+    while (alarm_sub->get_publisher_count() == 0 &&
+           std::chrono::steady_clock::now() < match_deadline)
+    {
+      std::this_thread::sleep_for(10ms);
+    }
+    ASSERT_GT(alarm_sub->get_publisher_count(), 0u) << "Alarm subscription never matched";
+  }
+
   auto req = std::make_shared<packml_msgs::srv::ModeChange::Request>();
   req->mode.val = 1;
   auto future = slow_mode_client->async_send_request(req);
 
-  // The manager's own bound is 5s; allow scheduling headroom above that.
-  ASSERT_EQ(future.wait_for(8s), std::future_status::ready)
-    << "Mode change request hung — the 5s bounded wait in wait_all_futures did not fire";
+  // Non-blocking: the response must arrive promptly (well under the 5s fan-out
+  // deadline) and report the accepted mode change.
+  ASSERT_EQ(future.wait_for(2s), std::future_status::ready)
+    << "Mode change blocked on the unresponsive child — fan-out is not asynchronous";
   auto resp = future.get();
-  EXPECT_FALSE(resp->success) << "Expected failure: child never acknowledged in time";
+  EXPECT_TRUE(resp->success)
+    << "Mode change accepted by the SM must report success; acks are asynchronous";
+
+  // The missing acknowledgement is reported out-of-band once the 5s fan-out deadline
+  // expires. Match the DEADLINE reason specifically ("no response within") so this
+  // cannot false-pass on a service-unavailable alarm from a different failure path.
+  const auto deadline = std::chrono::steady_clock::now() + 8s;
+  bool found_ack_alarm = false;
+  while (!found_ack_alarm && std::chrono::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lk(alarms_mutex);
+      for (const auto & a : alarms) {
+        if (a.node_name == slow_child_name && a.trigger &&
+            a.severity == packml_msgs::msg::Alarm::WARN &&
+            a.message.find("mode") != std::string::npos &&
+            a.message.find("no response within") != std::string::npos)
+        {
+          found_ack_alarm = true;
+          break;
+        }
+      }
+    }
+    std::this_thread::sleep_for(50ms);
+  }
+  EXPECT_TRUE(found_ack_alarm)
+    << "No WARN alarm reported the child's missing mode-transition acknowledgement";
+}
+
+// A registered child that is OFFLINE (no services at all) must not block or fail the
+// mode change either: the response reports the accepted change immediately, and the
+// unreachable child is flagged with a WARN "service unavailable" Alarm once the
+// fan-out deadline expires (the fan-out keeps retrying discovery until then, so a
+// merely slow-to-discover child is NOT falsely flagged).
+TEST_F(ManagerClientFanoutTest, OfflineChildFlaggedByFanoutAlarm)
+{
+  auto mgr_name = packml_ros_test::unique_node_name("mgr_offline_child_test");
+  const std::string offline_child_name = "offline_child_module";
+
+  auto mgr_node = rclcpp::Node::make_shared(mgr_name,
+    rclcpp::NodeOptions().parameter_overrides(
+      {rclcpp::Parameter("node_names", std::vector<std::string>{offline_child_name})}));
+
+  auto mgr_sm = std::make_unique<SMNode_new>(mgr_node);
+  auto state_client = mgr_node->create_client<packml_msgs::srv::StateChange>(
+    mgr_name + "/" + packml_ros::kChangeStateService);
+  auto mode_client = mgr_node->create_client<packml_msgs::srv::ModeChange>(
+    mgr_name + "/" + packml_ros::kChangeModeService);
+
+  packml_ros_test::SpinHelper mgr_spin(mgr_node);
+  ASSERT_TRUE(state_client->wait_for_service(5s));
+  ASSERT_TRUE(mode_client->wait_for_service(5s));
+
+  // Drive to IDLE (mode changes are only valid from IDLE).
+  auto state_req = std::make_shared<packml_msgs::srv::StateChange::Request>();
+  state_req->command = packml_msgs::srv::StateChange::Request::RESET;
+  auto state_future = state_client->async_send_request(state_req);
+  ASSERT_EQ(state_future.wait_for(5s), std::future_status::ready);
+  ASSERT_TRUE(state_future.get()->success) << "Setup RESET failed";
+  std::this_thread::sleep_for(500ms);
+
+  std::mutex alarms_mutex;
+  std::vector<packml_msgs::msg::Alarm> alarms;
+  auto alarm_sub = mgr_node->create_subscription<packml_msgs::msg::Alarm>(
+    packml_ros::kAlarmsTopic, rclcpp::QoS(50),
+    [&alarms, &alarms_mutex](packml_msgs::msg::Alarm::SharedPtr msg) {
+      std::lock_guard<std::mutex> lk(alarms_mutex);
+      alarms.push_back(*msg);
+    });
+  {
+    const auto match_deadline = std::chrono::steady_clock::now() + 2s;
+    while (alarm_sub->get_publisher_count() == 0 &&
+           std::chrono::steady_clock::now() < match_deadline)
+    {
+      std::this_thread::sleep_for(10ms);
+    }
+    ASSERT_GT(alarm_sub->get_publisher_count(), 0u) << "Alarm subscription never matched";
+  }
+
+  auto req = std::make_shared<packml_msgs::srv::ModeChange::Request>();
+  req->mode.val = 1;
+  auto future = mode_client->async_send_request(req);
+  ASSERT_EQ(future.wait_for(2s), std::future_status::ready)
+    << "Mode change blocked on the offline child";
+  EXPECT_TRUE(future.get()->success);
+
+  // The child never appears, so discovery retries exhaust the 5s fan-out deadline
+  // and the unavailable-alarm fires then.
+  const auto deadline = std::chrono::steady_clock::now() + 8s;
+  bool found_unavailable_alarm = false;
+  while (!found_unavailable_alarm && std::chrono::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lk(alarms_mutex);
+      for (const auto & a : alarms) {
+        if (a.node_name == offline_child_name && a.trigger &&
+            a.severity == packml_msgs::msg::Alarm::WARN &&
+            a.message.find("mode") != std::string::npos &&
+            a.message.find("unavailable") != std::string::npos)
+        {
+          found_unavailable_alarm = true;
+          break;
+        }
+      }
+    }
+    std::this_thread::sleep_for(50ms);
+  }
+  EXPECT_TRUE(found_unavailable_alarm)
+    << "No WARN alarm flagged the offline child's unavailable mode-transition service";
 }
 
 TEST_F(ManagerClientFanoutTest, NoClientsRegisteredStillSucceeds)

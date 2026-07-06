@@ -171,56 +171,37 @@ public:
     sm->on_state_changed = [this](packml_sm::State value, QString name) {
       RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "State changed to: " << name.toStdString() << "(" << value << ")");
 
-      auto handle_value = [](std::string client, packml_msgs::srv::StateTransition::Response::SharedPtr value) {
-        if (value->success)
-        {
-          RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), client << " switched to new state");
-          return true;
-        }
+      // The state machine already changed state and IS the source of truth, so the
+      // manager's view and the latched status update immediately and unconditionally.
+      // (Previously this blocked the Qt thread up to 5s waiting for every Equipment
+      // Module to acknowledge, and on any failure skipped the update entirely —
+      // leaving current_state stale and the status topic silent about a transition
+      // that had already happened.)
+      current_state.store(value);
 
-        RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), client << " did not switch state! Error: " << value->message);
-        return false;
-      };
+      // When the machine returns to STOPPED (e.g. operator CLEAR), re-arm the health
+      // timeout check so still-silent required Equipment Modules immediately trigger
+      // ABORT again instead of leaving the machine stuck.
+      if (value == packml_sm::State::STOPPED) {
+        rearm_health_timeouts();
+      }
 
+      // Notify the Equipment Modules without blocking this (Qt) thread; missing or
+      // rejected acknowledgements are surfaced as WARN logs/alarms by the fan-out.
+      // Fan out BEFORE publishing status: an EM that saw the new state on the
+      // latched status topic first would answer the transition request with the
+      // "already there" shortcut and skip its on_state_trans_req() hook. Initiating
+      // the requests first preserves the request-then-status order in the common
+      // case (delivery order across a service and a topic is not strictly
+      // guaranteed, so EM hooks should not depend on it — react to
+      // on_status_changed for authoritative state).
       auto request = std::make_shared<packml_msgs::srv::StateTransition::Request>();
       // TODO: create mapping
       request->state.set__val((int)value);
+      fanout_transition_to_clients<packml_msgs::srv::StateTransition>(
+        kStateFanoutKind, &PackmlManagerInterface::get_state_client, request);
 
-      auto futures =
-          call_all_clients<packml_msgs::srv::StateTransition>(PackmlManagerInterface::get_state_client, request);
-
-      auto succes = wait_all_futures<packml_msgs::srv::StateTransition>(futures, handle_value);
-
-      RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "Done waiting all features");
-
-      if (!succes)
-      {
-        // res->success = false;
-        // res->error_code = 1;
-        // res->message = "Error in one of the packml clients";
-        RCLCPP_WARN(rclcpp::get_logger("packml_ros"), "unsuccessfull!");
-      }
-      else
-      {
-        // Set current state
-        current_state = value;
-
-        // When the machine returns to STOPPED (e.g. operator CLEAR), re-arm
-        // the health timeout check so still-silent required Equipment Modules
-        // immediately trigger ABORT again instead of leaving the machine stuck.
-        if (value == packml_sm::State::STOPPED) {
-          rearm_health_timeouts();
-        }
-
-        // Publish new state
-        publish_status();
-
-        RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "Done publishing!");
-
-        // Send service response
-        // res->success = true;
-        // res->error_code = res->SUCCESS;
-      }
+      publish_status();
     };
 
     init(node, sm);

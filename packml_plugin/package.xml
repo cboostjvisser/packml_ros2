@@ -14,13 +14,17 @@
 
   <build_depend>rviz_common</build_depend>
   <build_depend>rclcpp</build_depend>
-  <build_depend>packml_msgs</build_depend> 
+  <build_depend>packml_msgs</build_depend>
   <build_depend>std_msgs</build_depend>
+  <build_depend>qtbase5-dev</build_depend>
 
   <exec_depend>rviz_common</exec_depend>
   <exec_depend>rclcpp</exec_depend>
-  <exec_depend>packml_msgs</exec_depend> 
+  <exec_depend>packml_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>libqt5-core</exec_depend>
+  <exec_depend>libqt5-widgets</exec_depend>
+  <exec_depend>libqt5-gui</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

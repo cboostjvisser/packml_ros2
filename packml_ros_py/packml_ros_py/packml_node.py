@@ -37,6 +37,7 @@ from packml_ros_py._packml_bindings import (
     MODE_TRANSITION_SERVICE,
     STATUS_TOPIC,
     HEARTBEAT_TOPIC,
+    PARAM_HEARTBEAT_INTERVAL_MS,
 )
 
 
@@ -109,7 +110,7 @@ class PackmlNode(Node):
 
         # --- Heartbeat publisher (mirrors C++ PackmlNodeInterface) ---
         heartbeat_interval_ms = self.declare_parameter(
-            'heartbeat_interval_ms', 1000).value
+            PARAM_HEARTBEAT_INTERVAL_MS, 1000).value
         heartbeat_interval_ms = heartbeat_interval_ms if heartbeat_interval_ms > 0 else 1000
 
         self._protocol.heartbeat.init(self.get_name(), heartbeat_interval_ms)

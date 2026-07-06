@@ -140,10 +140,9 @@ if(BUILD_TESTING)
     test/test_health_monitor.cpp
     test/test_health_monitor_integration.cpp
     # test/test_disabled_future_features.cpp
-    # Combined target runs ~50s (heartbeat/health tests use real-time waits, kept
-    # short via short test heartbeat intervals). That's within reach of the ament
-    # 60s default (a slower CI machine could push it over), so bump the timeout for
-    # headroom without over-inflating it.
+    # Combined target runs ~60s (heartbeat/health tests use real-time waits, kept
+    # short via short test heartbeat intervals). That's at the ament 60s default,
+    # so bump the timeout for headroom without over-inflating it.
     TIMEOUT 120
   )
 

@@ -143,4 +143,5 @@ PYBIND11_MODULE(_packml_bindings, m)
   m.attr("STATUS_TOPIC") = packml_ros::kStatusTopic;
   m.attr("ALARMS_TOPIC") = packml_ros::kAlarmsTopic;
   m.attr("HEARTBEAT_TOPIC") = packml_ros::kHeartbeatTopic;
+  m.attr("PARAM_HEARTBEAT_INTERVAL_MS") = packml_ros::kParamHeartbeatIntervalMs;
 }

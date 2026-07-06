@@ -568,25 +568,87 @@ TEST_F(HeartbeatTimeoutTest, TimeoutIntervalRespected)
   EXPECT_EQ(last_call(), NodeHealth::ABORT);
 }
 
-// After a timeout the node resumes sending heartbeats and no second ABORT fires
-// (skipped: recovery-after-timeout re-arm path not yet implemented).
+// After a timeout has fired its ABORT, the node resumes sending heartbeats: the
+// timed-out flag and liveness stamp reset, and NO second ABORT fires while the node
+// stays within its (new) timeout window. Expected: exactly one ABORT total, and the
+// gate reopens.
 TEST_F(HeartbeatTimeoutTest, TimeoutRecoveryNoSecondAbort)
 {
-  GTEST_SKIP() << "Recovery-after-timeout re-arm path deferred to Phase 2";
+  std::vector<int32_t> calls;
+  HealthMonitor mon([&calls](int32_t a) {calls.push_back(a);});
+  mon.register_required_node("motor", 3.0, /*startup_ms=*/1);   // 3ms timeout
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  mon.check_timeouts();
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0], NodeHealth::ABORT);
+
+  // Node resumes with a healthy heartbeat advertising a 1s interval (3s timeout).
+  NodeHeartbeat hb;
+  hb.node_name = "motor";
+  hb.health.status = NodeHealth::HEALTHY;
+  hb.health.action = NodeHealth::NONE;
+  hb.heartbeat_interval_ms = 1000;
+  mon.on_heartbeat(hb);
+
+  // Checks well inside the new window fire nothing further.
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  mon.check_timeouts();
+  mon.check_timeouts();
+  EXPECT_EQ(calls.size(), 1u);
+  EXPECT_TRUE(mon.can_transition_from_stopped());
 }
 
-// Two nodes advertising different intervals each get their own timeout window
-// (skipped: multi-node timeout ordering not yet implemented).
+// Each node's timeout window derives from ITS OWN advertised interval: with the same
+// factor and the same silence, the fast-interval node times out while the
+// slow-interval node does not.
 TEST_F(HeartbeatTimeoutTest, PerNodeIntervalUsedForTimeout)
 {
-  GTEST_SKIP() << "Multi-node timeout ordering deferred to Phase 2";
+  std::vector<int32_t> calls;
+  HealthMonitor mon([&calls](int32_t a) {calls.push_back(a);});
+  mon.register_required_node("fast_node", 3.0, /*startup_ms=*/10);
+  mon.register_required_node("slow_node", 3.0, /*startup_ms=*/10);
+
+  // Both beat once; fast advertises 10ms (30ms timeout), slow 10s (30s timeout).
+  NodeHeartbeat hb;
+  hb.health.status = NodeHealth::HEALTHY;
+  hb.health.action = NodeHealth::NONE;
+  hb.node_name = "fast_node";
+  hb.heartbeat_interval_ms = 10;
+  mon.on_heartbeat(hb);
+  hb.node_name = "slow_node";
+  hb.heartbeat_interval_ms = 10000;
+  mon.on_heartbeat(hb);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  mon.check_timeouts();
+
+  ASSERT_EQ(calls.size(), 1u);   // only the fast node's window elapsed
+  EXPECT_EQ(calls[0], NodeHealth::ABORT);
+  const auto summary = mon.gate_block_summary();
+  EXPECT_NE(summary.find("fast_node (timed out"), std::string::npos);
+  EXPECT_EQ(summary.find("slow_node"), std::string::npos);
 }
 
-// A per-node timeout_factor override is honored when computing that node's timeout
-// (skipped: per-node factor override not yet implemented).
+// A per-node timeout_factor override is honored: with identical startup intervals,
+// the node registered with a small factor times out while the node registered with a
+// large per-node factor does not.
 TEST_F(HeartbeatTimeoutTest, PerNodeTimeoutFactorOverride)
 {
-  GTEST_SKIP() << "Per-node factor override deferred to Phase 2";
+  std::vector<int32_t> calls;
+  HealthMonitor mon([&calls](int32_t a) {calls.push_back(a);});
+  mon.register_required_node("short_factor", 2.0, /*startup_ms=*/10);     // 20ms
+  mon.register_required_node("long_factor", 1000.0, /*startup_ms=*/10);   // 10s
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  mon.check_timeouts();
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0], NodeHealth::ABORT);
+  const auto summary = mon.gate_block_summary();
+  EXPECT_NE(summary.find("short_factor (timed out"), std::string::npos);
+  // long_factor's window has not elapsed; it blocks only as not-yet-seen.
+  EXPECT_NE(summary.find("long_factor (never seen"), std::string::npos);
 }
 
 // ============================================================================
@@ -629,11 +691,28 @@ TEST_F(MultiNodeTest, NodeBAbortDoesNotAffectNodeA)
   EXPECT_EQ(action_calls_[0], NodeHealth::ABORT);
 }
 
-// When both required nodes time out simultaneously, ABORT fires once per timed-out
-// node (skipped: simultaneous-timeout de-duplication not yet implemented).
+// When several required nodes time out in the same check, ABORT fires exactly ONCE —
+// it is a single machine-level reaction, deduplicated per tick — while each timed-out
+// node still gets its own timeout alarm carrying the per-node detail.
 TEST_F(MultiNodeTest, BothNodesTimeoutAbortFiresOnce)
 {
-  GTEST_SKIP() << "Simultaneous timeout de-dup is a Phase 2 concern";
+  std::vector<int32_t> calls;
+  std::vector<AlarmEvent> alarms;
+  HealthMonitor mon(
+    [&calls](int32_t a) {calls.push_back(a);},
+    0,
+    [&alarms](const AlarmEvent & ev) {alarms.push_back(ev);});
+  mon.register_required_node("node_a", 3.0, /*startup_ms=*/1);
+  mon.register_required_node("node_b", 3.0, /*startup_ms=*/1);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  mon.check_timeouts();
+
+  ASSERT_EQ(calls.size(), 1u);   // one machine-level ABORT, not one per node
+  EXPECT_EQ(calls[0], NodeHealth::ABORT);
+  ASSERT_EQ(alarms.size(), 2u);  // but one timeout alarm per node
+  EXPECT_TRUE(alarms[0].is_timeout);
+  EXPECT_TRUE(alarms[1].is_timeout);
 }
 
 // When every required node is HEALTHY, the STOPPED-transition gate is open.
@@ -785,13 +864,6 @@ TEST_F(EdgeCaseTest, SequenceNumberWrapNoCrash)
   hb.health.action = NodeHealth::NONE;
   hb.heartbeat_interval_ms = 1000;
   EXPECT_NO_THROW(mon.on_heartbeat(hb));
-}
-
-// Two heartbeats sharing a node_name are tracked as one node and the last state wins
-// (skipped: duplicate-name warning-log verification not yet implemented).
-TEST_F(EdgeCaseTest, DuplicateNodeNameLastWins)
-{
-  GTEST_SKIP() << "Duplicate name warning-log verification deferred to Phase 2";
 }
 
 // A heartbeat with heartbeat_interval_ms=0 is ignored for interval tracking, keeping
@@ -1136,6 +1208,51 @@ TEST_F(SequenceCheckTest, RestartAfterGapDetected)
     HealthMonitor::HeartbeatResult::ACCEPTED);
   ASSERT_EQ(action_calls_.size(), 1u);
   EXPECT_EQ(action_calls_[0], NodeHealth::HOLD);
+}
+
+// The deliberate fast-restart trade-off: a node that crashes and returns FASTER than
+// its own timeout has no observed absence, so its reset sequence numbers are dropped
+// as stale (indistinguishable from a zombie publisher). The drops do not refresh the
+// liveness stamp, so the monitor then times the node out — ONE safe-direction ABORT —
+// after which the observed absence makes the next backward sequence a RESTART and
+// normal processing resumes.
+TEST_F(SequenceCheckTest, FastRestartDropsUntilTimeoutThenRecovers)
+{
+  monitor_->register_required_node("motor", 3.0, /*startup_ms=*/10);
+
+  // Live baseline: seq 50, advertised interval 10ms -> 30ms timeout.
+  EXPECT_EQ(inject("motor", 50, NodeHealth::HEALTHY, NodeHealth::NONE, 0, /*interval=*/10),
+    HealthMonitor::HeartbeatResult::ACCEPTED);
+
+  // "Fast restart": the node is back within its own timeout window with a reset
+  // counter. No absence was observed -> dropped, no action fired.
+  EXPECT_EQ(inject("motor", 1, NodeHealth::HEALTHY, NodeHealth::NONE, 0, 10),
+    HealthMonitor::HeartbeatResult::DROPPED_STALE);
+  EXPECT_EQ(inject("motor", 2, NodeHealth::HEALTHY, NodeHealth::NONE, 0, 10),
+    HealthMonitor::HeartbeatResult::DROPPED_STALE);
+  EXPECT_TRUE(action_calls_.empty());
+
+  // The drops did NOT refresh the liveness stamp, so the node times out: the one
+  // safe-direction ABORT plus its timeout alarm.
+  std::this_thread::sleep_for(50ms);
+  monitor_->check_timeouts();
+  ASSERT_EQ(action_calls_.size(), 1u);
+  EXPECT_EQ(action_calls_[0], NodeHealth::ABORT);
+  ASSERT_EQ(alarm_calls_.size(), 1u);
+  EXPECT_TRUE(alarm_calls_[0].is_timeout);
+
+  // With the absence observed, the (still backward) next sequence is recognized as a
+  // RESTART, re-baselined, and clears the timeout alarm...
+  EXPECT_EQ(inject("motor", 3, NodeHealth::HEALTHY, NodeHealth::NONE, 0, 10),
+    HealthMonitor::HeartbeatResult::RESTART);
+  ASSERT_EQ(alarm_calls_.size(), 2u);
+  EXPECT_FALSE(alarm_calls_[1].trigger);
+  EXPECT_TRUE(alarm_calls_[1].is_timeout);
+
+  // ...and normal processing resumes: monotonic follow-ups accepted, gate open.
+  EXPECT_EQ(inject("motor", 4, NodeHealth::HEALTHY, NodeHealth::NONE, 0, 10),
+    HealthMonitor::HeartbeatResult::ACCEPTED);
+  EXPECT_TRUE(monitor_->can_transition_from_stopped());
 }
 
 // A large backward sequence jump with no observed gap (node still actively publishing)

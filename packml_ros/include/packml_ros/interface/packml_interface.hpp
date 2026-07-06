@@ -22,11 +22,16 @@
 // #include <packml_msgs/srv/detail/state_transition__struct.hpp>
 #include <qglobal.h>
 #include <rmw/qos_profiles.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <future>
 #include <map>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <rclcpp/callback_group.hpp>
 #include <rclcpp/client.hpp>
@@ -312,20 +317,18 @@ class PackmlClientInterface {
   rclcpp::Client<packml_msgs::srv::ModeTransition>::SharedPtr mode_tr_client;
   rclcpp::Subscription<packml_msgs::msg::Status>::SharedPtr status_sub;
 
-  rclcpp::executors::SingleThreadedExecutor callbck_grp_exec;
-  rclcpp::CallbackGroup::SharedPtr callback_grp;
-
+  // Clients live in the node's default callback group: fan-out responses arrive as
+  // asynchronous callbacks delivered by whatever executor spins the manager node.
+  // (A previous design gave each client its own callback group plus a manually
+  // spun executor so a blocking wait inside a service callback could pump the
+  // responses without re-entering the main executor; the fan-out is asynchronous
+  // now, so none of that machinery is needed.)
   PackmlClientInterface(std::string name, rclcpp::Node::SharedPtr parent_node) {
     auto state_tr_service_name = name + "/" + packml_ros::kStateTransitionService;
     auto mode_tr_service_name = name + "/" + packml_ros::kModeTransitionService;
-    // auto status_sub_name = "packml_status";
 
-    callback_grp = parent_node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
-    callbck_grp_exec.add_callback_group(callback_grp, parent_node->get_node_base_interface());
-
-    state_tr_client = parent_node->create_client<packml_msgs::srv::StateTransition>(state_tr_service_name, rclcpp::ServicesQoS(), callback_grp);
-    mode_tr_client = parent_node->create_client<packml_msgs::srv::ModeTransition>(mode_tr_service_name, rclcpp::ServicesQoS(), callback_grp);
-    // status_sub = parent_node->create_subscription<packml_msgs::msg::Status>(status_sub_name, rclcpp::SensorDataQoS(), [](const packml_msgs::msg::Status& status){});
+    state_tr_client = parent_node->create_client<packml_msgs::srv::StateTransition>(state_tr_service_name);
+    mode_tr_client = parent_node->create_client<packml_msgs::srv::ModeTransition>(mode_tr_service_name);
   }
 };
 
@@ -358,7 +361,6 @@ class PackmlManagerInterface
 
 
   rclcpp::Node::SharedPtr node_;
-  std::shared_ptr<packml_sm::StateMachine> sm_;
 
 protected:
   // Health-gate bypass config (see init()). A RESET from STOPPED with a required
@@ -390,101 +392,288 @@ protected:
     return client->state_tr_client;
   }
 
-  template <typename T = packml_msgs::srv::StateTransition>
-  std::map<std::string, typename rclcpp::Client<T>::FutureAndRequestId> call_all_clients(std::function<typename rclcpp::Client<T>::SharedPtr(std::shared_ptr<PackmlClientInterface>)> func, T::Request::SharedPtr request) {
-    std::map<std::string, typename rclcpp::Client<T>::FutureAndRequestId> futures;
-  // std::map<std::string, typename rclcpp::Client<T>::SharedFuture> call_all_clients(std::function<typename rclcpp::Client<T>::SharedPtr(std::shared_ptr<PackmlClientInterface>)> func, T::Request::SharedPtr request) {
-  //   std::map<std::string, typename rclcpp::Client<T>::SharedFuture> futures;
+  // -------------------------------------------------------------------------
+  // Asynchronous client fan-out with acknowledgement tracking
+  // -------------------------------------------------------------------------
 
-    // for all clients, check if service is available and send request
-    for (const auto & [client, val] : client_map_) {
-      // std::cout << "Requesting node " << key << " to change mode to: " << packml_sm::to_string(switching_mode) << std::endl;
+  /// Fan-out kind labels — used in logs and in the alarm message
+  /// ("Equipment Module did not acknowledge <kind> transition: ...").
+  static constexpr const char * kStateFanoutKind = "state";
+  static constexpr const char * kModeFanoutKind  = "mode";
 
-      if (!func(val)->wait_for_service(std::chrono::seconds(1))){
-        RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), "Client :" << client << " Service: " << func(val)->get_service_name() << " is unavailable!");
-        // TODO: If one of the clients is not online, we problably should error out?
-        //  Or; maybe that node is not needed in the current mode and we should just report back information about which client succeeded and which did not
-      }
-      else {
-        futures.emplace(client, func(val)->async_send_request(request));
-      }
+  /// Tracks one asynchronous state/mode fan-out to the registered child clients.
+  /// Owned by active_fanouts_ (and by in-flight response callbacks) until finalized.
+  struct ClientFanout
+  {
+    enum class ClientStatus { PENDING, ACKED, FAILED };
+    std::string kind;                               ///< "state" or "mode" — for logs/alarms
+    std::chrono::steady_clock::time_point deadline;
+    std::map<std::string, ClientStatus> clients;
+    std::map<std::string, int64_t> request_ids;     ///< to prune unanswered SENT requests
+    /// Clients whose service was not yet discovered at fan-out time; retried every
+    /// deadline-check tick until it appears or the deadline expires. The closures
+    /// capture this tracker (shared_ptr) — finalize_fanout() MUST clear this map to
+    /// break the resulting ownership cycle.
+    std::map<std::string, std::function<bool()>> unsent_;
+    std::function<void(const std::string &, int64_t)> prune_request;
+    bool finalized{false};
+  };
 
-      // else {
-      //   // std::future
-      //   futures.emplace(key,  func(val)->async_send_request(request, [&futures, key](rclcpp::Client<T>::SharedFuture future){
-      //     // futures.emplace(key, future);
-      //     std::cout << "future called!" << std::endl;
-      //   }));
-      // }
+  std::mutex fanouts_mutex_;   // guards active_fanouts_ and every ClientFanout's fields
+  std::vector<std::shared_ptr<ClientFanout>> active_fanouts_;
+  std::mutex status_publish_mutex_;  // see publish_status()
 
-      // auto request = std::make_shared<packml_msgs::srv::ModeTransition::Request>();
-      // request->mode = request->mode;
+  // DESTRUCTION ORDER IS LOAD-BEARING: sm_ must stay the LAST declared data member
+  // of this class. Members are destroyed in reverse declaration order, and
+  // ~StateMachine synchronously stops the Qt state-machine thread and drains its
+  // callbacks — the on_state_changed callback (Qt thread) touches the fan-out,
+  // status, and health members of this class, so the state machine must be torn
+  // down FIRST, while everything the callback uses is still alive. Declare any
+  // new data member ABOVE this line.
+  std::shared_ptr<packml_sm::StateMachine> sm_;
 
-    }
-
-    return futures;
+  /// Surface one client's fan-out failure out-of-band: an event-style WARN Alarm on
+  /// packml_alarms (trigger=true with no matching clear — it records an occurrence,
+  /// not a persistent condition) plus the WARN log on_alarm_event() already emits.
+  void report_fanout_failure(
+    const std::string & kind, const std::string & client_name, const std::string & reason)
+  {
+    AlarmEvent ev;
+    ev.trigger    = true;
+    ev.node_name  = client_name;
+    ev.severity   = packml_msgs::msg::NodeHealth::WARN;
+    ev.error_code = 0;
+    ev.is_timeout = false;
+    ev.message    = "Equipment Module did not acknowledge " + kind + " transition: " + reason;
+    on_alarm_event(ev);
   }
 
-  template <typename T = packml_msgs::srv::StateTransition>
-  bool wait_all_futures(std::map<std::string, typename rclcpp::Client<T>::FutureAndRequestId>& futures, std::function<bool(std::string, typename T::Response::SharedPtr)> on_value) {
-  // bool wait_all_futures(std::map<std::string, typename rclcpp::Client<T>::SharedFuture>& futures, std::function<bool(std::string, typename T::Response::SharedPtr)> on_value) {
-
-      if (futures.size() <= 0) {
-        RCLCPP_WARN(rclcpp::get_logger("packml_ros"), "No futures to wait on!");
-        return true;
-      } else if (futures.size() != client_map_.size()) {
-        // TODO: see line 243
-        RCLCPP_WARN(rclcpp::get_logger("packml_ros"), "Not all clients responded with a future, maybe some are offline?");
-        return false;
+  /// Finalize a fan-out: clients still PENDING are failed (deadline expired), their
+  /// unanswered requests pruned from the client, a summary logged, and the tracker
+  /// retired. Safe to call from a response callback and the deadline check
+  /// concurrently — only the first caller acts.
+  void finalize_fanout(const std::shared_ptr<ClientFanout> & fanout)
+  {
+    std::vector<std::pair<std::string, int64_t>> unanswered;   // sent, no response
+    std::vector<std::string> undiscovered;                     // never became available
+    size_t acked = 0;
+    size_t total = 0;
+    {
+      std::lock_guard<std::mutex> lk(fanouts_mutex_);
+      if (fanout->finalized) {
+        return;
       }
-
-      // We return success if all on_value() callbacks returned true
-      bool success = true;
-      bool done = false;
-
-      // Bound the wait so a client that stops responding cannot hang the caller
-      // forever — on the main executor (mode changes) an unbounded wait would also
-      // starve the periodic health-timeout checks. On timeout, fail the request.
-      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-      while (!done && success) {
-        if (std::chrono::steady_clock::now() >= deadline) {
-          RCLCPP_WARN(rclcpp::get_logger("packml_ros"),
-            "Timed out (5s) waiting for client service responses; failing the request");
-          return false;
-        }
-        bool any_waiting = false;
-
-        // Spin each client executor with a bounded timeout so the deadline is
-        // actually checked even when no response has arrived (an untimed spin_once()
-        // would block indefinitely, defeating the deadline).
-        for (auto const& [client_name, client] : client_map_) {
-          client->callbck_grp_exec.spin_once(std::chrono::milliseconds(20));
-           RCLCPP_DEBUG_STREAM(rclcpp::get_logger("packml_ros"), client_name << ": Spinned once");
-        }
-
-        // For all returned future service responses, check if data ready
-        for (auto & [client_name, future_and_request_id] : futures) {
-          if (future_and_request_id.valid()) {
-            if (auto response = future_and_request_id.wait_for(std::chrono::seconds(0)); response == std::future_status::ready) {
-              auto service_response = future_and_request_id.get();
-
-              success = on_value(client_name, service_response);
-            }
-            else {
-              // We are still waiting on one of the future values
-              any_waiting = true;
-            }
+      fanout->finalized = true;
+      total = fanout->clients.size();
+      for (auto & [name, status] : fanout->clients) {
+        if (status == ClientFanout::ClientStatus::PENDING) {
+          status = ClientFanout::ClientStatus::FAILED;
+          auto id_it = fanout->request_ids.find(name);
+          if (id_it != fanout->request_ids.end()) {
+            unanswered.emplace_back(name, id_it->second);
+          } else {
+            undiscovered.push_back(name);
           }
+        } else if (status == ClientFanout::ClientStatus::ACKED) {
+          ++acked;
         }
-        done = !any_waiting;
       }
+      // The retry closures capture this tracker — clear them to break the
+      // shared_ptr ownership cycle (fanout -> unsent_ -> closure -> fanout).
+      fanout->unsent_.clear();
+      active_fanouts_.erase(
+        std::remove(active_fanouts_.begin(), active_fanouts_.end(), fanout),
+        active_fanouts_.end());
+    }
 
-      return success;
+    for (const auto & [name, request_id] : unanswered) {
+      if (fanout->prune_request) {
+        fanout->prune_request(name, request_id);
+      }
+      report_fanout_failure(fanout->kind, name, "no response within the fan-out deadline");
+    }
+    for (const auto & name : undiscovered) {
+      report_fanout_failure(fanout->kind, name, "service unavailable for the entire fan-out deadline");
+    }
+    if (acked == total) {
+      RCLCPP_INFO(rclcpp::get_logger("packml_ros"),
+        "%s fan-out complete: %zu/%zu Equipment Module(s) acknowledged",
+        fanout->kind.c_str(), acked, total);
+    } else {
+      RCLCPP_WARN(rclcpp::get_logger("packml_ros"),
+        "%s fan-out incomplete: %zu/%zu Equipment Module(s) acknowledged",
+        fanout->kind.c_str(), acked, total);
+    }
+  }
+
+  /// Retry sends whose service was not yet discovered, then expire fan-outs whose
+  /// deadline passed with acknowledgements still missing. Driven by the manager's
+  /// periodic wall timer (see init()). Retrying first gives a service that appeared
+  /// just before the deadline one last chance in the same tick.
+  void check_fanout_deadlines()
+  {
+    std::vector<std::pair<std::shared_ptr<ClientFanout>, std::function<bool()>>> retries;
+    std::vector<std::pair<std::shared_ptr<ClientFanout>, std::string>> retry_names;
+    {
+      std::lock_guard<std::mutex> lk(fanouts_mutex_);
+      for (const auto & fanout : active_fanouts_) {
+        for (const auto & [name, try_send] : fanout->unsent_) {
+          retries.emplace_back(fanout, try_send);
+          retry_names.emplace_back(fanout, name);
+        }
+      }
+    }
+    for (size_t i = 0; i < retries.size(); ++i) {
+      if (retries[i].second()) {   // sends outside the lock; records its own id
+        std::lock_guard<std::mutex> lk(fanouts_mutex_);
+        retry_names[i].first->unsent_.erase(retry_names[i].second);
+      }
+    }
+
+    std::vector<std::shared_ptr<ClientFanout>> expired;
+    {
+      std::lock_guard<std::mutex> lk(fanouts_mutex_);
+      const auto now = std::chrono::steady_clock::now();
+      for (const auto & fanout : active_fanouts_) {
+        if (now >= fanout->deadline) {
+          expired.push_back(fanout);
+        }
+      }
+    }
+    for (const auto & fanout : expired) {
+      finalize_fanout(fanout);
+    }
+  }
+
+  /// Send `request` to every registered child's state/mode-transition service WITHOUT
+  /// blocking the calling thread (state fan-outs run on the Qt state-machine thread,
+  /// mode fan-outs on the executor thread). Acknowledgements arrive as asynchronous
+  /// response callbacks on the node's executor; a client that is offline, rejects, or
+  /// stays silent past the deadline is surfaced out-of-band via WARN log + WARN Alarm.
+  /// A failed fan-out does NOT roll back the machine state: the state machine is the
+  /// source of truth and the manager's status has already been published.
+  template <typename T>
+  void fanout_transition_to_clients(
+    const std::string & kind,
+    std::function<typename rclcpp::Client<T>::SharedPtr(std::shared_ptr<PackmlClientInterface>)> get_client,
+    typename T::Request::SharedPtr request)
+  {
+    if (client_map_.empty()) {
+      return;
+    }
+
+    auto fanout = std::make_shared<ClientFanout>();
+    fanout->kind = kind;
+    fanout->deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    fanout->prune_request = [this, get_client](const std::string & name, int64_t request_id) {
+        auto it = client_map_.find(name);
+        if (it != client_map_.end()) {
+          get_client(it->second)->remove_pending_request(request_id);
+        }
+      };
+
+    // Pass 1: register EVERY client in the tracker before any request is sent, so a
+    // fast response to the first request can never observe a partially-populated set
+    // and declare the fan-out complete prematurely.
+    std::vector<std::pair<std::string, typename rclcpp::Client<T>::SharedPtr>> targets;
+    {
+      std::lock_guard<std::mutex> lk(fanouts_mutex_);
+      for (const auto & [client_name, client] : client_map_) {
+        fanout->clients[client_name] = ClientFanout::ClientStatus::PENDING;
+        targets.emplace_back(client_name, get_client(client));
+      }
+      active_fanouts_.push_back(fanout);
+    }
+
+    // Pass 2: send. A client whose service is not yet discovered (e.g. a fan-out
+    // fired milliseconds after startup, or an Equipment Module mid-restart) is NOT
+    // failed immediately: it is retried on every deadline-check tick until the
+    // service appears or the deadline expires — a non-blocking replacement for the
+    // old 1s wait_for_service grace. The deadline covers the never-appears case.
+    for (const auto & [client_name, srv] : targets) {
+      if (!try_send_to_client<T>(fanout, client_name, srv, request)) {
+        const std::string name = client_name;
+        auto service = srv;
+        std::lock_guard<std::mutex> lk(fanouts_mutex_);
+        if (!fanout->finalized) {
+          fanout->unsent_[name] = [this, fanout, name, service, request]() {
+              return try_send_to_client<T>(fanout, name, service, request);
+            };
+        }
+      }
+    }
+  }
+
+  /// Attempt one client's send. Returns false if the service is not yet discovered
+  /// (caller keeps it for retry). On send, installs the response callback that
+  /// records the acknowledgement and finalizes the fan-out when it is the last one
+  /// outstanding.
+  template <typename T>
+  bool try_send_to_client(
+    const std::shared_ptr<ClientFanout> & fanout,
+    const std::string & client_name,
+    typename rclcpp::Client<T>::SharedPtr srv,
+    typename T::Request::SharedPtr request)
+  {
+    if (!srv->service_is_ready()) {
+      return false;
+    }
+    const std::string name = client_name;
+    auto future_and_id = srv->async_send_request(request,
+      [this, fanout, name](typename rclcpp::Client<T>::SharedFuture response_future) {
+        const auto response = response_future.get();
+        bool complete = false;
+        {
+          std::lock_guard<std::mutex> lk(fanouts_mutex_);
+          if (fanout->finalized) {
+            return;  // the deadline check already reported this fan-out
+          }
+          fanout->clients[name] = response->success
+            ? ClientFanout::ClientStatus::ACKED
+            : ClientFanout::ClientStatus::FAILED;
+          complete = std::none_of(fanout->clients.begin(), fanout->clients.end(),
+            [](const auto & entry) {return entry.second == ClientFanout::ClientStatus::PENDING;});
+        }
+        if (response->success) {
+          RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"),
+            name << " acknowledged " << fanout->kind << " transition");
+        } else {
+          report_fanout_failure(fanout->kind, name, "rejected: " + response->message);
+        }
+        if (complete) {
+          finalize_fanout(fanout);
+        }
+      });
+    // Record the id and re-check finalized in ONE critical section: if the deadline
+    // finalized this fan-out while the request was being handed to the middleware,
+    // finalize could not have known this id — prune the request ourselves so it
+    // cannot linger in the client's pending map for a never-responding EM.
+    bool finalized_meanwhile = false;
+    {
+      std::lock_guard<std::mutex> lk(fanouts_mutex_);
+      if (fanout->finalized) {
+        finalized_meanwhile = true;
+      } else {
+        fanout->request_ids[client_name] = future_and_id.request_id;
+      }
+    }
+    if (finalized_meanwhile) {
+      srv->remove_pending_request(future_and_id.request_id);
+    }
+    return true;
   }
 
 
   void publish_status()
   {
+    // Serialize snapshot+publish: this is called from BOTH the Qt state-machine
+    // thread (on_state_changed) and the executor thread (on_change_mode). Without
+    // the lock, two racing calls can publish out of order and the depth-1
+    // TRANSIENT_LOCAL topic would retain the OLDER snapshot indefinitely (each
+    // caller stores its own atomic before calling, so under the lock the last
+    // publisher always emits a snapshot at least as fresh as its own change).
+    std::lock_guard<std::mutex> status_lk(status_publish_mutex_);
+
     // One consistent snapshot of the atomics for this publication.
     const packml_sm::State state_now = current_state.load();
     const packml_sm::ModeType mode_now = current_mode.load();
@@ -520,56 +709,37 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
       // TODO: make mapping between packml_msgs::msg::Mode constant declarations and packml_sm::Mode
       switching_mode = static_cast<packml_sm::ModeType>(req->mode.val);
 
-      std::string error_message;
-      bool success = true;
       auto change_result = sm_->changeMode(switching_mode);
 
-      // If state machine successfully changed mode, then change clients
       if (!change_result.has_value()) {
-        error_message = change_result.error();
-        success = false;
-      }
-      else
-      {
-        auto handle_value = [res](std::string client, packml_msgs::srv::ModeTransition::Response::SharedPtr value){
-            if (value->success) {
-              RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), client << " switched to new mode");
-              return true;
-            }
-
-            RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), client << " did not switch mode! Error: " << value->message);
-            return false;
-          };
-
-        auto request = std::make_shared<packml_msgs::srv::ModeTransition::Request>();
-        request->mode = req->mode;
-
-        auto futures = call_all_clients<packml_msgs::srv::ModeTransition>(PackmlManagerInterface::get_mode_client, request);
-
-        success = wait_all_futures<packml_msgs::srv::ModeTransition>(futures, handle_value);
-        if (!success) {
-          error_message = "Error in one of the packml clients";
-        }
-      }
-
-      if (!success) {
         res->success = false;
         res->error_code = res->INVALID_MODE_REQUEST;
-        res->message = error_message;
-      }
-      else
-      {
-        // Set current mode
-        current_mode = switching_mode;
-
-        // Publish new state
-        publish_status();
-
-        // Send service response
-        res->success = true;
-        res->error_code = res->SUCCESS;
+        res->message = change_result.error();
+        return;
       }
 
+      // The state machine accepted the mode change and IS the source of truth, so the
+      // manager's view and the latched status update immediately. The response means
+      // the request was *accepted* (mirroring ~/changeState): Equipment Module
+      // acknowledgements are collected asynchronously by the fan-out below and
+      // surfaced as WARN logs/alarms — never as a synchronous failure here. (The old
+      // blocking wait starved this executor's health-timeout checks for up to 5s and
+      // reported failure for a mode the state machine had already switched.)
+      current_mode.store(switching_mode);
+
+      // Fan out BEFORE publishing status, for the same reason as the state path
+      // (see on_state_changed in packml_ros-new.hpp): an EM that sees the new mode
+      // on the latched status topic first would "already there"-shortcut the
+      // transition request and skip its on_mode_trans_req() hook.
+      auto request = std::make_shared<packml_msgs::srv::ModeTransition::Request>();
+      request->mode = req->mode;
+      fanout_transition_to_clients<packml_msgs::srv::ModeTransition>(
+        kModeFanoutKind, &PackmlManagerInterface::get_mode_client, request);
+
+      publish_status();
+
+      res->success = true;
+      res->error_code = res->SUCCESS;
   };
 
   void on_change_state(packml_msgs::srv::StateChange::Request::SharedPtr req, packml_msgs::srv::StateChange::Response::SharedPtr res) {
@@ -907,11 +1077,14 @@ protected:
         req_node.c_str(), topic.c_str());
     }
 
-    // Periodic timeout checker (every 200 ms by default).
+    // Periodic timeout checker (every 200 ms by default). Also expires client
+    // fan-out deadlines — both are "did the thing we're waiting on go silent?"
+    // checks on the same cadence.
     health_timeout_timer_ = node->create_wall_timer(
       std::chrono::milliseconds(200),
       [this]() {
         health_monitor_->check_timeouts();
+        check_fanout_deadlines();
         // Startup readiness: log (throttled) which required nodes are still unseen,
         // so a misconfigured/missing node name is visible rather than a silent block.
         // Once every required node has reported once, stop doing this work — the

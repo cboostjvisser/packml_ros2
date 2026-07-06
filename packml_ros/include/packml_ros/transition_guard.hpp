@@ -31,31 +31,9 @@
 #include <mutex>
 #include <string>
 #include <packml_sm/common.hpp>
+#include "packml_ros/ros_names.hpp"
 
 namespace packml_ros {
-
-// Canonical topic / service names used by both C++ PackmlNodeInterface and Python PackmlNode.
-static constexpr auto kStateTransitionService = "packml_state_transition";
-static constexpr auto kModeTransitionService  = "packml_mode_transition";
-static constexpr auto kStatusTopic            = "packml_status";
-static constexpr auto kAlarmsTopic            = "packml_alarms";
-
-// Manager node-relative service / topic names (created/used under the node's "~/" namespace).
-static constexpr auto kChangeModeService  = "changeMode";
-static constexpr auto kChangeStateService = "changeState";
-static constexpr auto kAllStatusService   = "allStatus";
-static constexpr auto kHeartbeatTopic     = "heartbeat";  // EM publishes "~/heartbeat"; manager subscribes "/<node>/heartbeat"
-
-// Canonical ROS parameter names declared by the manager / node interface.
-static constexpr auto kParamHeartbeatIntervalMs          = "heartbeat_interval_ms";
-static constexpr auto kParamNodeNames                    = "node_names";
-static constexpr auto kParamRequiredNodes                = "required_nodes";
-static constexpr auto kParamHeartbeatTimeoutFactor       = "heartbeat_timeout_factor";
-static constexpr auto kParamManualModeAllowsHealthBypass = "manual_mode_allows_health_bypass";
-static constexpr auto kParamManualMode                   = "manual_mode";
-static constexpr auto kParamHeartbeatStartupGraceMs      = "heartbeat_startup_grace_ms";
-static constexpr auto kParamInitialMode                  = "initial_mode";
-static constexpr auto kParamModesConfigFile              = "modes_config_file";
 
 /// Result of a state or mode transition request.
 struct TransitionResult

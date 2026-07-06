@@ -28,6 +28,7 @@ from packml_msgs.msg import Status, State as StateMsg, Mode as ModeMsg, NodeHeal
 from packml_ros_py import PackmlNode, State
 from packml_ros_py import (
     STATE_TRANSITION_SERVICE, MODE_TRANSITION_SERVICE, STATUS_TOPIC, HEARTBEAT_TOPIC,
+    PARAM_HEARTBEAT_INTERVAL_MS,
 )
 import packml_modes
 
@@ -88,7 +89,7 @@ def fast_packml_node():
     """PackmlNode with a short heartbeat interval so periodic-publish tests run quickly."""
     node = PackmlNode(
         'test_packml_node_fast',
-        parameter_overrides=[Parameter('heartbeat_interval_ms', value=50)],
+        parameter_overrides=[Parameter(PARAM_HEARTBEAT_INTERVAL_MS, value=50)],
     )
     yield node
     node.destroy_node()
@@ -506,7 +507,7 @@ class TestPostEvent:
             def __init__(self):
                 super().__init__(
                     'test_packml_node_override',
-                    parameter_overrides=[Parameter('heartbeat_interval_ms', value=50)])
+                    parameter_overrides=[Parameter(PARAM_HEARTBEAT_INTERVAL_MS, value=50)])
 
             def get_health_status(self):
                 h = NodeHealth()
