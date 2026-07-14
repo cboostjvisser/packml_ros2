@@ -60,6 +60,7 @@
 #include <packml_msgs/srv/mode_change.hpp>
 #include <packml_msgs/srv/state_change.hpp>
 #include "packml_ros/health_monitor.hpp"
+#include "packml_ros/error_catalog.hpp"
 
 namespace packml_ros {
   inline packml_sm::TransitionCmd to_transition_cmd(packml_msgs::srv::StateChange::Request::_command_type command)
@@ -358,7 +359,12 @@ class PackmlManagerInterface
   /// Publisher for alarm events — one message per alarm raise/update/clear.
   rclcpp::Publisher<packml_msgs::msg::Alarm>::SharedPtr alarm_pub_;
 
-
+  /// Loaded once at init() if `error_catalog_file` is set (see init()); left
+  /// default-constructed/unused otherwise. Fail-open: an absent or unloadable
+  /// catalog just means on_alarm_event() doesn't enrich alarm messages.
+  packml_ros::MachineCatalog machine_catalog_;
+  bool has_error_catalog_{false};
+  std::string catalog_language_{"en"};
 
   rclcpp::Node::SharedPtr node_;
 
@@ -869,17 +875,37 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
     // TODO: change the packml_msgs::srv::AllStatus to just contain packml_msgs::msg::Status.
   }
 
-  /// Publish an alarm event from a HealthMonitor AlarmEvent.
+  /// Publish an alarm event from a HealthMonitor AlarmEvent. When an error
+  /// catalog is loaded (see init()), a raise's message is enriched with the
+  /// catalog's description ahead of the node's own free-text message.
   void on_alarm_event(const AlarmEvent & ev)
   {
     if (!alarm_pub_) {
       return;
     }
+
+    std::string message = ev.message;
+    if (has_error_catalog_ && ev.trigger) {
+      const packml_ros::MachineEntry * entry = ev.is_timeout
+        ? machine_catalog_.find_global(machine_catalog_.reserved("heartbeat_timeout"))
+        : machine_catalog_.find(ev.node_name, ev.error_code);
+      if (entry) {
+        const std::string resolved =
+          machine_catalog_.resolve_message(entry->entry, catalog_language_, "");
+        message = ev.message.empty() ? resolved : resolved + ": " + ev.message;
+      } else if (!ev.is_timeout && ev.error_code != 0) {
+        RCLCPP_WARN_THROTTLE(rclcpp::get_logger("packml_ros"), *node_->get_clock(), 5000,
+          "[ErrorCatalog] node '%s' error_code=%d has no catalog entry — "
+          "alarm message not enriched",
+          ev.node_name.c_str(), ev.error_code);
+      }
+    }
+
     if (ev.trigger) {
       RCLCPP_WARN(rclcpp::get_logger("packml_ros"),
         "[Alarm] RAISED  node='%s' id=%d severity=%d%s: %s",
         ev.node_name.c_str(), ev.error_code, ev.severity,
-        ev.is_timeout ? " (timeout)" : "", ev.message.c_str());
+        ev.is_timeout ? " (timeout)" : "", message.c_str());
     } else {
       RCLCPP_INFO(rclcpp::get_logger("packml_ros"),
         "[Alarm] CLEARED node='%s' id=%d", ev.node_name.c_str(), ev.error_code);
@@ -891,7 +917,7 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
     msg.severity   = static_cast<uint8_t>(ev.severity);
     msg.error_code = static_cast<uint32_t>(ev.error_code);
     msg.is_timeout = ev.is_timeout;
-    msg.message    = ev.message;
+    msg.message    = message;
     alarm_pub_->publish(msg);
   }
 
@@ -1075,6 +1101,60 @@ protected:
       RCLCPP_INFO(rclcpp::get_logger("packml_ros"),
         "[HealthMonitor] Monitoring required node: %s (topic: %s)",
         req_node.c_str(), topic.c_str());
+    }
+
+    // Optional: load the aggregated error catalog so on_alarm_event() can
+    // enrich an alarm's message with the catalog's description. Mirrors
+    // modes_config_file: a path parameter, loaded once here, fail-open on any
+    // problem — the machine runs unaffected, alarms just stay unenriched.
+    if (!node->has_parameter(packml_ros::kParamErrorCatalogFile)) {
+      node->declare_parameter(packml_ros::kParamErrorCatalogFile, std::string(""));
+    }
+    if (!node->has_parameter(packml_ros::kParamLanguage)) {
+      node->declare_parameter(packml_ros::kParamLanguage, std::string("en"));
+    }
+    catalog_language_ = node->get_parameter(packml_ros::kParamLanguage).as_string();
+    const auto error_catalog_path =
+      node->get_parameter(packml_ros::kParamErrorCatalogFile).as_string();
+
+    if (!error_catalog_path.empty()) {
+      const auto catalog_result = packml_ros::load_machine_catalog_from_yaml(error_catalog_path);
+      for (const auto & warning : catalog_result.warnings) {
+        RCLCPP_WARN(rclcpp::get_logger("packml_ros"), "[ErrorCatalog] %s", warning.c_str());
+      }
+      if (catalog_result.ok) {
+        machine_catalog_ = catalog_result.catalog;
+        has_error_catalog_ = true;
+        RCLCPP_INFO(rclcpp::get_logger("packml_ros"),
+          "[ErrorCatalog] Loaded '%s' (%zu node code(s))",
+          error_catalog_path.c_str(), machine_catalog_.size());
+
+        // Bidirectional drift check: a required node missing from the catalog,
+        // or a catalog node that isn't required, usually means the error map
+        // and the bringup config were edited independently. Surfaced as a
+        // startup WARN, not a load failure — the catalog is purely
+        // informational (fail-open), so drift degrades text, never behavior.
+        for (const auto & req_node : required_nodes) {
+          if (!machine_catalog_.has_node(req_node)) {
+            RCLCPP_WARN(rclcpp::get_logger("packml_ros"),
+              "[ErrorCatalog] required node '%s' has no entries in the error catalog",
+              req_node.c_str());
+          }
+        }
+        for (const auto & catalog_node : machine_catalog_.node_names()) {
+          if (std::find(required_nodes.begin(), required_nodes.end(), catalog_node) ==
+            required_nodes.end())
+          {
+            RCLCPP_WARN(rclcpp::get_logger("packml_ros"),
+              "[ErrorCatalog] catalog node '%s' is not in required_nodes",
+              catalog_node.c_str());
+          }
+        }
+      } else {
+        RCLCPP_ERROR(rclcpp::get_logger("packml_ros"),
+          "[ErrorCatalog] Failed to load '%s': %s — continuing without it",
+          error_catalog_path.c_str(), catalog_result.error.c_str());
+      }
     }
 
     // Periodic timeout checker (every 200 ms by default). Also expires client

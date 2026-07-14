@@ -44,5 +44,7 @@ static constexpr auto kParamManualMode                   = "manual_mode";
 static constexpr auto kParamHeartbeatStartupGraceMs      = "heartbeat_startup_grace_ms";
 static constexpr auto kParamInitialMode                  = "initial_mode";
 static constexpr auto kParamModesConfigFile              = "modes_config_file";
+static constexpr auto kParamErrorCatalogFile              = "error_catalog_file";
+static constexpr auto kParamLanguage                      = "language";
 
 }  // namespace packml_ros

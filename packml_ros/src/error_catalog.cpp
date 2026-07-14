@@ -259,20 +259,47 @@ CatalogLoadResult load_node_catalog_from_yaml(const std::string & path)
 // MachineCatalog
 // ---------------------------------------------------------------------------
 
+void MachineCatalog::invalidate_stale_global(int32_t winning_global, const MachineEntry & winner)
+{
+  const auto prev = by_global_.find(winning_global);
+  if (prev == by_global_.end()) {
+    return;
+  }
+  const MachineEntry & stale = prev->second;
+  // Reserved entries share the meaningless default entry.code == 0, so their
+  // identity is their name; node entries are identified by (node_name, code).
+  const bool same_entity = (stale.node_name == kManagerNodeName)
+    ? (stale.entry.name == winner.entry.name)
+    : (stale.node_name == winner.node_name && stale.entry.code == winner.entry.code);
+  if (same_entity) {
+    return;  // same entry re-added with a new global — not a collision
+  }
+  if (stale.node_name == kManagerNodeName) {
+    const auto it = reserved_.find(stale.entry.name);
+    if (it != reserved_.end()) {
+      it->second = 0;
+    }
+  } else {
+    by_node_local_[stale.node_name][stale.entry.code].global = 0;
+  }
+}
+
 void MachineCatalog::add_node_entry(const MachineEntry & e)
 {
-  by_node_local_[e.node_name][e.entry.code] = e;
   if (e.global != 0) {  // 0 means "no mapping" — keep it out of the global index
+    invalidate_stale_global(e.global, e);
     by_global_[e.global] = e;
   }
+  by_node_local_[e.node_name][e.entry.code] = e;
 }
 
 void MachineCatalog::add_reserved_entry(const std::string & name, const MachineEntry & e)
 {
-  reserved_[name] = e.global;
   if (e.global != 0) {
+    invalidate_stale_global(e.global, e);
     by_global_[e.global] = e;
   }
+  reserved_[name] = e.global;
 }
 
 void MachineCatalog::set_instance_labels(
@@ -428,7 +455,7 @@ MachineCatalogLoadResult load_machine_catalog_from_yaml(const std::string & path
 
         MachineEntry me;
         me.global = block[schema::kGlobalKey].as<int32_t>();
-        me.node_name = "manager";
+        me.node_name = kManagerNodeName;
         me.entry.name = name;
 
         for (const auto & field : block) {

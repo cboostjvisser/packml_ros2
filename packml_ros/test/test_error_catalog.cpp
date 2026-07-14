@@ -14,7 +14,6 @@
 //
 // ---
 // Tests for the ErrorCatalog core (pure C++, no ROS node required).
-// See docs/designs/ERROR_CATALOG_DESIGN.md, section "Testing".
 
 #include <gtest/gtest.h>
 
@@ -627,7 +626,7 @@ TEST(MachineCatalog, ReservedHeartbeatTimeoutCode)
 
   const auto * e = result.catalog.find_global(1);
   ASSERT_NE(e, nullptr);
-  EXPECT_EQ(e->node_name, "manager");
+  EXPECT_EQ(e->node_name, packml_ros::kManagerNodeName);
   EXPECT_TRUE(e->entry.instanced);  // its text carries {instance}
 }
 
@@ -716,7 +715,7 @@ TEST(MachineCatalog, NodeNamesAndHasNode)
   EXPECT_EQ(names.size(), 2u);  // "manager" (reserved) is not a node
   EXPECT_TRUE(result.catalog.has_node("motor_driver_node"));
   EXPECT_TRUE(result.catalog.has_node("acme_gripper_node"));
-  EXPECT_FALSE(result.catalog.has_node("manager"));
+  EXPECT_FALSE(result.catalog.has_node(packml_ros::kManagerNodeName));
   EXPECT_FALSE(result.catalog.has_node("ghost_node"));
 }
 
@@ -800,6 +799,65 @@ nodes:
   ASSERT_TRUE(result.ok) << result.error;
 
   EXPECT_TRUE(has_warning_containing(result.warnings, "duplicate global fault number 1301"));
+}
+
+// After a duplicate-global load, find() and find_global() must agree on a
+// single owner: the loser's node-local entry keeps existing but its global is
+// zeroed (no mapping), rather than both entries claiming the same global.
+TEST(MachineCatalog, DuplicateGlobalIndicesStayConsistent)
+{
+  TempYaml yaml(R"(
+nodes:
+  motor_driver_node:
+    codes:
+      301:
+        global: 1301
+        name: OVERCURRENT
+      302:
+        global: 1301
+        name: OVER_TEMPERATURE
+)");
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+
+  const auto * winner = result.catalog.find_global(1301);
+  ASSERT_NE(winner, nullptr);
+  EXPECT_EQ(winner->entry.name, "OVER_TEMPERATURE");  // 302 loaded last — wins
+
+  const auto * loser = result.catalog.find("motor_driver_node", 301);
+  ASSERT_NE(loser, nullptr);
+  EXPECT_EQ(loser->global, 0) << "loser must not still claim the winner's global";
+
+  // The round trip: looking up the winner's own (node, local) key must return
+  // the same global find_global() reported for it.
+  const auto * winner_by_local = result.catalog.find(winner->node_name, winner->entry.code);
+  ASSERT_NE(winner_by_local, nullptr);
+  EXPECT_EQ(winner_by_local->global, 1301);
+}
+
+// The same round-trip guarantee applies when two *reserved* faults collide:
+// reserved() for the loser's name must no longer report the winner's global.
+TEST(MachineCatalog, DuplicateGlobalAcrossReservedStaysConsistent)
+{
+  TempYaml yaml(R"(
+reserved:
+  heartbeat_timeout:
+    global: 1
+    en: "Heartbeat lost"
+  fanout_failure:
+    global: 1
+    en: "Fan-out failed"
+)");
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+
+  EXPECT_EQ(result.catalog.reserved("fanout_failure"), 1);  // loaded last — wins
+  EXPECT_EQ(result.catalog.reserved("heartbeat_timeout"), 0)
+    << "loser must not still claim the winner's global";
+
+  const auto * winner = result.catalog.find_global(1);
+  ASSERT_NE(winner, nullptr);
+  EXPECT_EQ(winner->entry.name, "fanout_failure");
 }
 
 // resolve_message on a plain entry leaves any incidental text untouched; an

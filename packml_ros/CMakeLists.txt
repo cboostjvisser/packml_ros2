@@ -46,6 +46,7 @@ target_link_libraries(
           packml_sm::packml_sm
           ${packml_msgs_TARGETS}
           transition_guard
+          error_catalog
           # std_msgs
           Qt5::Core)
 
@@ -62,6 +63,7 @@ target_link_libraries(
           packml_sm::packml_sm
           ${packml_msgs_TARGETS}
           transition_guard
+          error_catalog
           Qt5::Core)
 
 add_executable(example_health_demo examples/example_health_demo.cpp)
@@ -77,6 +79,7 @@ target_link_libraries(
           packml_sm::packml_sm
           ${packml_msgs_TARGETS}
           transition_guard
+          error_catalog
           Qt5::Core)
 
 add_library(${PROJECT_NAME} INTERFACE)
@@ -92,6 +95,7 @@ target_link_libraries(
           packml_sm::packml_sm
           ${packml_msgs_TARGETS}
           transition_guard
+          error_catalog
           # std_msgs
           Qt5::Core)
 

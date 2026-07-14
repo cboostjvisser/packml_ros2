@@ -133,12 +133,16 @@ CatalogLoadResult load_node_catalog_from_yaml(const std::string & path);
 // operator messages (substituting instance labels into {instance} templates),
 // and carries the manager-synthesized "reserved" faults (e.g. heartbeat_timeout).
 
+/// Sentinel `MachineEntry::node_name` for manager-synthesized reserved faults
+/// (e.g. heartbeat_timeout) — no Equipment Module owns these.
+constexpr const char * kManagerNodeName = "manager";
+
 /// One entry in the machine catalog: a node-local ErrorEntry plus its assigned
-/// global fault number and the owning node ("manager" for reserved entries).
+/// global fault number and the owning node (kManagerNodeName for reserved entries).
 struct MachineEntry
 {
   int32_t global{0};
-  std::string node_name;   ///< owning node; "manager" for reserved entries
+  std::string node_name;   ///< owning node; kManagerNodeName for reserved entries
   ErrorEntry entry;        ///< entry.code is the node-local code (0 for reserved)
 };
 
@@ -189,6 +193,12 @@ public:
   void set_languages(std::vector<std::string> langs);
 
 private:
+  /// If `winning_global` was already claimed by a different (node, local) or
+  /// reserved entry, zero that entry's stored global so find()/find_global()
+  /// agree on one owner (the loader has already logged a "duplicate global —
+  /// last wins" warning; this makes the indices actually round-trip on it).
+  void invalidate_stale_global(int32_t winning_global, const MachineEntry & winner);
+
   std::map<std::string, std::map<int32_t, MachineEntry>> by_node_local_;  ///< node → local → entry
   std::map<int32_t, MachineEntry> by_global_;                             ///< global → entry (nodes + reserved)
   std::map<std::string, int32_t> reserved_;                               ///< reserved name → global
