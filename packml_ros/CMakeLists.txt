@@ -30,6 +30,8 @@ find_package(packml_msgs REQUIRED)
 find_package(packml_sm REQUIRED)
 # find_package(std_msgs REQUIRED)
 find_package(Qt5 COMPONENTS Core REQUIRED)
+find_package(yaml-cpp REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 add_executable(${PROJECT_NAME}_node src/packml_ros_node.cpp)
 
@@ -104,10 +106,42 @@ target_include_directories(
 
 target_link_libraries(transition_guard PUBLIC packml_sm::packml_sm)
 
+# ErrorCatalog: implementor-defined error codes with multi-language descriptions.
+# Separate shared library (like transition_guard); yaml-cpp and packml_msgs are
+# private implementation details (the public header error_catalog.hpp is msg-free).
+
+# The error-catalog YAML's section/field key names (e.g. "error_codes",
+# "descriptions") are generated into a private C++ header from the same Python
+# module that defines them for generate_error_codes_header.py's own codegen,
+# so error_catalog.cpp's parser and the Python script can't independently
+# drift on the same schema.
+set(_error_catalog_schema_dir "${CMAKE_CURRENT_BINARY_DIR}/error_catalog_schema/include")
+set(_error_catalog_schema_header "${_error_catalog_schema_dir}/packml_ros/error_catalog_schema_keys.hpp")
+add_custom_command(
+  OUTPUT "${_error_catalog_schema_header}"
+  COMMAND ${Python3_EXECUTABLE}
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/generate_error_codes_header.py"
+          --schema-keys-header "${_error_catalog_schema_header}"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/generate_error_codes_header.py"
+  COMMENT "Generating error-catalog schema key constants"
+)
+add_custom_target(error_catalog_schema_keys_gen DEPENDS "${_error_catalog_schema_header}")
+
+add_library(error_catalog SHARED src/error_catalog.cpp)
+add_dependencies(error_catalog error_catalog_schema_keys_gen)
+
+target_include_directories(
+    error_catalog
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+           $<INSTALL_INTERFACE:include/${PROJECT_NAME}>
+    PRIVATE $<BUILD_INTERFACE:${_error_catalog_schema_dir}>)
+
+target_link_libraries(error_catalog PRIVATE ${packml_msgs_TARGETS} yaml-cpp)
+
 #install
 install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
 
-install(TARGETS ${PROJECT_NAME} ${PROJECT_NAME}_node example_packml_node example_health_demo transition_guard
+install(TARGETS ${PROJECT_NAME} ${PROJECT_NAME}_node example_packml_node example_health_demo transition_guard error_catalog
   EXPORT ${PROJECT_NAME}-targets
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
@@ -139,6 +173,7 @@ if(BUILD_TESTING)
     test/test_transition_guard.cpp
     test/test_health_monitor.cpp
     test/test_health_monitor_integration.cpp
+    test/test_error_catalog.cpp
     # test/test_disabled_future_features.cpp
     # Combined target runs ~60s (heartbeat/health tests use real-time waits, kept
     # short via short test heartbeat intervals). That's at the ament 60s default,
@@ -151,8 +186,17 @@ if(BUILD_TESTING)
                               $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
                               $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
 
-  target_link_libraries(${PROJECT_NAME}_tests ${PROJECT_NAME} transition_guard Qt5::Core)
+  target_link_libraries(${PROJECT_NAME}_tests ${PROJECT_NAME} transition_guard error_catalog Qt5::Core)
 endif()
+
+# Error-catalog code generation function + script, for downstream node packages
+# (mirrors packml_sm's exported packml_sm_generate_modes).
+install(
+  FILES
+    cmake/packml_ros_generate_error_codes.cmake
+    cmake/generate_error_codes_header.py
+  DESTINATION share/${PROJECT_NAME}/cmake
+)
 
 #Substituting the catkin_package () components:
 ament_export_targets(${PROJECT_NAME}-targets)
