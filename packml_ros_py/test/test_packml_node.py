@@ -452,6 +452,7 @@ class TestPostEvent:
         fault.action = NodeHealth.ABORT
         fault.error_code = 42
         fault.message = 'test fault'
+        fault.instance_id = 'cell_north'
         packml_node.post_event(fault)
 
         deadline = time.monotonic() + 1.0
@@ -462,6 +463,7 @@ class TestPostEvent:
         assert received[0].health.status == NodeHealth.ERROR
         assert received[0].health.action == NodeHealth.ABORT
         assert received[0].health.error_code == 42
+        assert received[0].health.instance_id == 'cell_north'
 
     def test_post_event_latches_and_repeats(self, fast_packml_node, client_node, fast_executor):
         """After post_event() with an actionable fault, the periodic publisher must
@@ -485,6 +487,7 @@ class TestPostEvent:
         fault.status = NodeHealth.ERROR
         fault.action = NodeHealth.HOLD
         fault.error_code = 7
+        fault.instance_id = 'cell_south'
         fast_packml_node.post_event(fault)
 
         deadline = time.monotonic() + 2.0
@@ -497,6 +500,7 @@ class TestPostEvent:
         for msg in after_fault:
             assert msg.health.action == NodeHealth.HOLD
             assert msg.health.error_code == 7
+            assert msg.health.instance_id == 'cell_south'
 
     def test_post_event_clear_resumes_getter(self, client_node):
         """Posting a healthy/NONE event clears the latch, so subsequent heartbeats

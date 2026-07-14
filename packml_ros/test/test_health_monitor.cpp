@@ -937,7 +937,8 @@ protected:
 
   void inject(const std::string & node, int32_t status, int32_t action,
     int32_t error_code = 0,
-    const std::string & message = "")
+    const std::string & message = "",
+    const std::string & instance_id = "")
   {
     NodeHeartbeat hb;
     hb.node_name = node;
@@ -945,6 +946,7 @@ protected:
     hb.health.action = action;
     hb.health.error_code = error_code;
     hb.health.message = message;
+    hb.health.instance_id = instance_id;
     hb.heartbeat_interval_ms = 1000;
     monitor_->on_heartbeat(hb);
   }
@@ -1011,6 +1013,57 @@ TEST_F(AlarmCallbackTest, SecondRaiseAfterClearFiresNewAlarm)
   inject("motor", NodeHealth::ERROR, NodeHealth::HOLD, 101);
   ASSERT_EQ(alarm_calls_.size(), 3u);
   EXPECT_TRUE(alarm_calls_[2].trigger);
+}
+
+// Repeating the same instanced fault (same action/code/instance) does not refire —
+// mirrors RepeatedHoldFiresOnce, but with instance_id held constant.
+TEST_F(AlarmCallbackTest, SameInstanceRepeatedDoesNotRefire)
+{
+  inject("gripper", NodeHealth::ERROR, NodeHealth::HOLD, 101, "vacuum lost", "cell_north");
+  inject("gripper", NodeHealth::ERROR, NodeHealth::HOLD, 101, "vacuum lost", "cell_north");
+  ASSERT_EQ(alarm_calls_.size(), 1u);
+}
+
+// The same action/error_code at a DIFFERENT instance (e.g. a second, simultaneous
+// E-stop location) is a distinct fault and must refire, not be suppressed as a repeat.
+TEST_F(AlarmCallbackTest, DifferentInstanceSameCodeRefires)
+{
+  inject("gripper", NodeHealth::ERROR, NodeHealth::HOLD, 101, "vacuum lost", "cell_north");
+  ASSERT_EQ(alarm_calls_.size(), 1u);
+  EXPECT_EQ(alarm_calls_[0].instance_id, "cell_north");
+
+  inject("gripper", NodeHealth::ERROR, NodeHealth::HOLD, 101, "vacuum lost", "cell_south");
+  ASSERT_EQ(alarm_calls_.size(), 2u);
+  EXPECT_TRUE(alarm_calls_[1].trigger);
+  EXPECT_EQ(alarm_calls_[1].instance_id, "cell_south");
+}
+
+// Clearing an instanced fault preserves its instance_id on the clear event, same as
+// severity/error_code (AlarmClearedOnHealthy) — a consumer needs to know WHICH
+// instance cleared.
+TEST_F(AlarmCallbackTest, ClearPreservesInstanceId)
+{
+  inject("gripper", NodeHealth::ERROR, NodeHealth::HOLD, 101, "vacuum lost", "cell_north");
+  inject("gripper", NodeHealth::HEALTHY, NodeHealth::NONE);
+  ASSERT_EQ(alarm_calls_.size(), 2u);
+  EXPECT_FALSE(alarm_calls_[1].trigger);
+  EXPECT_EQ(alarm_calls_[1].instance_id, "cell_north");
+}
+
+// A heartbeat timeout is node-level, never instanced — is_timeout alarms always carry
+// an empty instance_id regardless of what the node last reported.
+TEST_F(HeartbeatTimeoutTest, TimeoutAlarmHasNoInstanceId)
+{
+  std::vector<AlarmEvent> alarms;
+  auto mon = std::make_unique<HealthMonitor>(
+    [](int32_t) {}, 0,
+    [&alarms](const AlarmEvent & ev) {alarms.push_back(ev);});
+  mon->register_required_node("motor", 3.0, /*startup_ms=*/1);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  mon->check_timeouts();
+  ASSERT_EQ(alarms.size(), 1u);
+  EXPECT_TRUE(alarms[0].is_timeout);
+  EXPECT_TRUE(alarms[0].instance_id.empty());
 }
 
 // A single interleaved HEALTHY heartbeat (e.g. from a zombie node with the same name)

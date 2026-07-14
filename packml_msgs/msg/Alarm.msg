@@ -35,3 +35,31 @@ bool is_timeout
 
 # Human-readable description supplied by the PackML Node. Empty on clear.
 string message
+
+# Global (manager-assigned) fault number resolved from the machine error
+# catalog; 0 if no catalog is loaded or no entry matched this node/error_code.
+uint32 global_code
+
+# Instance identifier for a per-location/per-unit fault (e.g. "cell_north"),
+# propagated from NodeHealth.instance_id; empty if this fault is not instanced.
+string instance_id
+
+# PackML machine state at the moment this alarm was generated.
+State state
+
+# Identifies which "stop episode" this alarm belongs to; 0 = none. The manager
+# mints a new id on the first alarm raised while the health gate is closed, and
+# every alarm raised or cleared before the gate reopens carries that same id —
+# so the earliest timestamp sharing an id is the first fault of that episode.
+# This is a single-manager grouping id: it does not correlate alarms across
+# multiple machines on the same line (that needs its own durable key and
+# lifecycle, not yet designed).
+uint64 stop_event_id
+
+# Durable identifier for the fault's source (source package + symbolic name),
+# for cross-machine correlation independent of this manager's global_code
+# numbering (which collides once a line has more than one machine). Currently
+# always empty: the per-node error catalog does not yet carry a package
+# identity to build this from. Reserved here so adding it later needs no
+# second breaking wire change.
+string source_key

@@ -33,3 +33,8 @@ string message
 
 # User-defined error code (0 = no error)
 int32 error_code
+
+# Identifies which physical location/unit this fault applies to (e.g.
+# "cell_north"), for a node that can raise the same error_code at more than
+# one location. Empty = not an instanced fault (the common case).
+string instance_id

@@ -483,3 +483,78 @@ TEST_F(HealthIntegrationTest, AlarmClearPublishedOnFaultClear)
   EXPECT_TRUE(found_raise) << "No alarm-raised event seen on packml_alarms for sim_em_a";
   EXPECT_TRUE(found_clear) << "No alarm-cleared event seen on packml_alarms for sim_em_a";
 }
+
+// Alarm::stop_event_id correlates every alarm in one gate-closed episode: the raise
+// and the clear that ends it share the same nonzero id; once the gate has reopened
+// (the periodic timer observes it) a later, separate episode gets a NEW id.
+TEST_F(HealthIntegrationTest, StopEventIdCorrelatesEpisodeThenAdvances)
+{
+  std::vector<packml_msgs::msg::Alarm> alarms;
+  std::mutex alarms_mutex;
+  auto alarm_sub = mgr_node_->create_subscription<packml_msgs::msg::Alarm>(
+    "packml_alarms", rclcpp::QoS(50),
+    [&alarms, &alarms_mutex](packml_msgs::msg::Alarm::SharedPtr msg) {
+      std::lock_guard<std::mutex> lk(alarms_mutex);
+      alarms.push_back(*msg);
+    });
+  auto snapshot = [&] {
+    std::lock_guard<std::mutex> lk(alarms_mutex);
+    return alarms;
+  };
+
+  send_state_change(mgr_node_, state_client_,
+    packml_msgs::srv::StateChange::Request::STOP);
+  std::this_thread::sleep_for(300ms);
+  make_all_healthy();
+
+  // --- Episode 1: raise then clear ---
+  em_a_->health_status = NodeHealth::ERROR;
+  em_a_->health_action = NodeHealth::HOLD;
+  std::this_thread::sleep_for(800ms);
+  em_a_->health_status = NodeHealth::HEALTHY;
+  em_a_->health_action = NodeHealth::NONE;
+  std::this_thread::sleep_for(800ms);
+
+  uint64_t episode1_id = 0;
+  bool found_raise = false;
+  for (const auto & a : snapshot()) {
+    if (a.node_name == "sim_em_a") {
+      EXPECT_NE(a.stop_event_id, 0u) << "a HOLD-severity alarm must belong to a stop episode";
+      if (episode1_id == 0) {
+        episode1_id = a.stop_event_id;
+      } else {
+        EXPECT_EQ(a.stop_event_id, episode1_id)
+          << "the raise and its clear must share the same episode id";
+      }
+      if (a.trigger) {
+        found_raise = true;
+        EXPECT_NE(a.state.val, packml_msgs::msg::State::UNDEFINED);
+      }
+    }
+  }
+  ASSERT_TRUE(found_raise);
+  ASSERT_NE(episode1_id, 0u);
+
+  // Give the periodic timer time to observe the reopened gate and reset the episode.
+  std::this_thread::sleep_for(500ms);
+  {
+    std::lock_guard<std::mutex> lk(alarms_mutex);
+    alarms.clear();
+  }
+
+  // --- Episode 2: a fresh, unrelated raise must get a NEW id ---
+  em_a_->health_status = NodeHealth::ERROR;
+  em_a_->health_action = NodeHealth::HOLD;
+  std::this_thread::sleep_for(800ms);
+
+  bool found_second_raise = false;
+  for (const auto & a : snapshot()) {
+    if (a.node_name == "sim_em_a" && a.trigger) {
+      found_second_raise = true;
+      EXPECT_NE(a.stop_event_id, 0u);
+      EXPECT_NE(a.stop_event_id, episode1_id)
+        << "a new episode after the gate reopened must get a new id";
+    }
+  }
+  EXPECT_TRUE(found_second_raise) << "No second raise event observed for sim_em_a";
+}

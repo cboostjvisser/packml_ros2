@@ -110,7 +110,9 @@ public:
   // latches it here so the periodic publisher repeats that state instead of
   // calling get_health_status() — preventing fault/heal flapping when the getter
   // is not also updated. Cleared by posting a healthy/NONE event (clear_latch()).
-  void set_latch(int32_t status, int32_t action, int32_t error_code, std::string message)
+  void set_latch(
+    int32_t status, int32_t action, int32_t error_code, std::string message,
+    std::string instance_id = "")
   {
     std::lock_guard<std::mutex> lk(latch_mutex_);
     latch_active_     = true;
@@ -118,6 +120,7 @@ public:
     latch_action_     = action;
     latch_error_code_ = error_code;
     latch_message_    = std::move(message);
+    latch_instance_id_ = std::move(instance_id);
   }
   void clear_latch()
   {
@@ -135,11 +138,14 @@ public:
     int32_t     action{0};
     int32_t     error_code{0};
     std::string message;
+    std::string instance_id;
   };
   LatchSnapshot latch_snapshot() const
   {
     std::lock_guard<std::mutex> lk(latch_mutex_);
-    return LatchSnapshot{latch_active_, latch_status_, latch_action_, latch_error_code_, latch_message_};
+    return LatchSnapshot{
+      latch_active_, latch_status_, latch_action_, latch_error_code_, latch_message_,
+      latch_instance_id_};
   }
 
 private:
@@ -154,6 +160,7 @@ private:
   int32_t     latch_action_{0};
   int32_t     latch_error_code_{0};
   std::string latch_message_;
+  std::string latch_instance_id_;
 };
 
 // ---------------------------------------------------------------------------

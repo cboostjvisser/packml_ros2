@@ -148,7 +148,8 @@ public:
     if (health.action == packml_msgs::msg::NodeHealth::NONE) {
       protocol_.heartbeat.clear_latch();
     } else {
-      protocol_.heartbeat.set_latch(health.status, health.action, health.error_code, health.message);
+      protocol_.heartbeat.set_latch(
+        health.status, health.action, health.error_code, health.message, health.instance_id);
     }
     heartbeat_publisher_->publish(make_heartbeat(health));
   }
@@ -296,6 +297,7 @@ public:
           health.action     = latch.action;
           health.error_code = latch.error_code;
           health.message    = latch.message;
+          health.instance_id = latch.instance_id;
         } else {
           health = get_health_status();
         }
@@ -365,6 +367,19 @@ class PackmlManagerInterface
   packml_ros::MachineCatalog machine_catalog_;
   bool has_error_catalog_{false};
   std::string catalog_language_{"en"};
+
+  /// A "stop episode" is the span from the first gate-blocking alarm (HOLD/
+  /// SUSPEND/ABORT severity, or a heartbeat timeout — WARN never blocks the
+  /// gate) until the health gate reopens (every required node healthy again).
+  /// active_stop_event_id_ is 0 outside an episode; on_alarm_event() mints a
+  /// new id from next_stop_event_id_ on the first gate-blocking alarm, every
+  /// alarm raised or cleared during the episode (from any node) carries that
+  /// same id, and the health_timeout_timer_ tick resets it to 0 once the gate
+  /// reopens (see init()). Lets a consumer of Alarm::stop_event_id group
+  /// everything that happened during one stop and find the first
+  /// (earliest-timestamp) fault that caused it.
+  uint64_t next_stop_event_id_{1};
+  uint64_t active_stop_event_id_{0};
 
   rclcpp::Node::SharedPtr node_;
 
@@ -885,20 +900,34 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
     }
 
     std::string message = ev.message;
+    uint32_t global_code = 0;
     if (has_error_catalog_ && ev.trigger) {
       const packml_ros::MachineEntry * entry = ev.is_timeout
         ? machine_catalog_.find_global(machine_catalog_.reserved("heartbeat_timeout"))
         : machine_catalog_.find(ev.node_name, ev.error_code);
       if (entry) {
         const std::string resolved =
-          machine_catalog_.resolve_message(entry->entry, catalog_language_, "");
+          machine_catalog_.resolve_message(entry->entry, catalog_language_, ev.instance_id);
         message = ev.message.empty() ? resolved : resolved + ": " + ev.message;
+        global_code = static_cast<uint32_t>(entry->global);
       } else if (!ev.is_timeout && ev.error_code != 0) {
         RCLCPP_WARN_THROTTLE(rclcpp::get_logger("packml_ros"), *node_->get_clock(), 5000,
           "[ErrorCatalog] node '%s' error_code=%d has no catalog entry — "
           "alarm message not enriched",
           ev.node_name.c_str(), ev.error_code);
       }
+    }
+
+    // Stop-episode correlation: mint a new id on the first gate-blocking alarm (WARN
+    // never blocks the gate — see HealthMonitor::gate_block_reason — so it doesn't
+    // start an episode); the timer tick in init() resets it once the gate reopens.
+    // Approximate: it doesn't check whether the raising node is itself *required*,
+    // so a non-required node's HOLD/ABORT can start an episode the gate never
+    // actually blocked on.
+    const bool blocking_severity =
+      ev.is_timeout || ev.severity > packml_msgs::msg::NodeHealth::WARN;
+    if (ev.trigger && blocking_severity && active_stop_event_id_ == 0) {
+      active_stop_event_id_ = next_stop_event_id_++;
     }
 
     if (ev.trigger) {
@@ -918,6 +947,11 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
     msg.error_code = static_cast<uint32_t>(ev.error_code);
     msg.is_timeout = ev.is_timeout;
     msg.message    = message;
+    msg.global_code = global_code;
+    msg.instance_id = ev.instance_id;
+    msg.state.val  = static_cast<int8_t>(current_state.load());
+    msg.stop_event_id = active_stop_event_id_;
+    // msg.source_key intentionally left empty — see Alarm.msg.
     alarm_pub_->publish(msg);
   }
 
@@ -1165,6 +1199,17 @@ protected:
       [this]() {
         health_monitor_->check_timeouts();
         check_fanout_deadlines();
+        // Close out the current stop episode once the health gate reopens (see
+        // Alarm::stop_event_id and on_alarm_event()) — mirrors the bypass
+        // computation in on_change_state().
+        if (active_stop_event_id_ != 0) {
+          const bool manual = manual_mode_allows_health_bypass_ &&
+                              health_bypass_mode_ >= 0 &&
+                              static_cast<int64_t>(current_mode.load()) == health_bypass_mode_;
+          if (health_monitor_->can_transition_from_stopped(manual)) {
+            active_stop_event_id_ = 0;
+          }
+        }
         // Startup readiness: log (throttled) which required nodes are still unseen,
         // so a misconfigured/missing node name is visible rather than a silent block.
         // Once every required node has reported once, stop doing this work — the

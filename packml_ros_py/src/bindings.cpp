@@ -98,7 +98,8 @@ PYBIND11_MODULE(_packml_bindings, m)
     .def_readonly("status", &packml_ros::HeartbeatState::LatchSnapshot::status)
     .def_readonly("action", &packml_ros::HeartbeatState::LatchSnapshot::action)
     .def_readonly("error_code", &packml_ros::HeartbeatState::LatchSnapshot::error_code)
-    .def_readonly("message", &packml_ros::HeartbeatState::LatchSnapshot::message);
+    .def_readonly("message", &packml_ros::HeartbeatState::LatchSnapshot::message)
+    .def_readonly("instance_id", &packml_ros::HeartbeatState::LatchSnapshot::instance_id);
 
   // --- HeartbeatState ---
   // Not directly constructible from Python; always accessed via PackmlNodeProtocol.heartbeat.
@@ -116,12 +117,13 @@ PYBIND11_MODULE(_packml_bindings, m)
     .def_property_readonly("is_active", &packml_ros::HeartbeatState::is_active)
     .def("set_latch", &packml_ros::HeartbeatState::set_latch,
          py::arg("status"), py::arg("action"), py::arg("error_code"), py::arg("message"),
+         py::arg("instance_id") = std::string(),
          "Latch a sticky health state for the periodic publisher to repeat.")
     .def("clear_latch", &packml_ros::HeartbeatState::clear_latch,
          "Clear the latched health; resume get_health_status()-driven publishing.")
     .def("latch_snapshot", &packml_ros::HeartbeatState::latch_snapshot,
          "Torn-read-free snapshot of the whole latch (active/status/action/error_code/"
-         "message) under one lock — use instead of per-field reads.");
+         "message/instance_id) under one lock — use instead of per-field reads.");
 
   // --- PackmlNodeProtocol ---
 

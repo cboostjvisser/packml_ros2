@@ -66,6 +66,8 @@ struct AlarmEvent
   bool is_timeout{false};          ///< true for a manager-synthesized heartbeat-timeout alarm,
                                     ///< and for the event that clears one.
   std::string message;             ///< empty on clear.
+  std::string instance_id;         ///< per-location/per-unit id, or empty if not instanced;
+                                    ///< always empty for a timeout alarm (see check_timeouts()).
 };
 
 /// Pure C++ health monitor for PackML Equipment Modules.
@@ -245,8 +247,9 @@ public:
 
       const int32_t prev_action = node.last_action;
       const int32_t prev_alarm_id = node.last_alarm_id;
+      const std::string prev_instance_id = node.last_instance_id;
       action_to_fire = process_action_transition(node, msg.health.action, msg.health.status);
-      alarm = compute_alarm(node, msg.node_name, prev_action, prev_alarm_id, msg);
+      alarm = compute_alarm(node, msg.node_name, prev_action, prev_alarm_id, prev_instance_id, msg);
     }
 
     // Fire callbacks outside the lock (avoids holding nodes_mutex_ across changeState).
@@ -308,7 +311,9 @@ public:
             ev.message    = never_seen
               ? "Required node never reported a heartbeat — check the node name and that it is running"
               : "Heartbeat timeout — node stopped responding";
+            // A heartbeat timeout is node-level, not per-location — never instanced.
             node.last_alarm_id = 0;
+            node.last_instance_id.clear();
             alarms.push_back(std::move(ev));
           }
         }
@@ -410,6 +415,7 @@ private:
     int32_t last_action{NodeHealth::NONE};
     int32_t last_status{NodeHealth::UNKNOWN};
     int32_t last_alarm_id{0};            // error_code of last fired alarm
+    std::string last_instance_id;        // instance_id of last fired alarm
 
     std::chrono::steady_clock::time_point last_stamp{std::chrono::steady_clock::now()};
     uint32_t interval_ms{100};           // learned from heartbeat or startup default
@@ -557,6 +563,7 @@ private:
     const std::string & node_name,
     int32_t prev_action,
     int32_t prev_alarm_id,
+    const std::string & prev_instance_id,
     const NodeHeartbeat & msg)
   {
     if (!on_alarm_) {
@@ -564,13 +571,18 @@ private:
     }
     const int32_t cur_action = node.last_action;
     const int32_t cur_id     = msg.health.error_code;
+    const std::string & cur_instance_id = msg.health.instance_id;
 
     const bool was_alarmed = (prev_action != NodeHealth::NONE);
     const bool is_alarmed  = (cur_action  != NodeHealth::NONE);
 
     if (is_alarmed) {
-      // Fire if new alarm, severity changed, or error code changed.
-      if (!was_alarmed || prev_action != cur_action || prev_alarm_id != cur_id) {
+      // Fire if new alarm, severity changed, error code changed, or — for the same
+      // action/code — a different instance (e.g. a second, simultaneous E-stop
+      // location) rather than a repeat of the one already alarmed.
+      if (!was_alarmed || prev_action != cur_action || prev_alarm_id != cur_id ||
+        prev_instance_id != cur_instance_id)
+      {
         AlarmEvent ev;
         ev.trigger    = true;
         ev.node_name  = node_name;
@@ -578,21 +590,26 @@ private:
         ev.error_code = cur_id;
         ev.is_timeout = false;  // any heartbeat-driven raise is node-reported, not synthesized
         ev.message    = msg.health.message;
+        ev.instance_id = cur_instance_id;
         node.last_alarm_id = cur_id;
+        node.last_instance_id = cur_instance_id;
         node.current_alarm_is_timeout = false;
         return ev;
       }
     } else if (was_alarmed) {
-      // Alarm cleared. severity/error_code preserve what the alarm was, not a neutral
-      // value — a consumer sees "the HOLD alarm (id 101) cleared", not "a 0 alarm cleared".
+      // Alarm cleared. severity/error_code/instance_id preserve what the alarm was, not
+      // a neutral value — a consumer sees "the HOLD alarm (id 101) cleared", not "a 0
+      // alarm cleared".
       AlarmEvent ev;
       ev.trigger    = false;
       ev.node_name  = node_name;
       ev.severity   = prev_action;
       ev.error_code = prev_alarm_id;
       ev.is_timeout = node.current_alarm_is_timeout;
+      ev.instance_id = prev_instance_id;
       node.current_alarm_is_timeout = false;
       node.last_alarm_id = 0;
+      node.last_instance_id.clear();
       return ev;
     }
     return std::nullopt;

@@ -208,7 +208,8 @@ class PackmlNode(Node):
             self._protocol.heartbeat.clear_latch()
         else:
             self._protocol.heartbeat.set_latch(
-                health.status, health.action, health.error_code, health.message)
+                health.status, health.action, health.error_code, health.message,
+                health.instance_id)
         self._heartbeat_pub.publish(self._make_heartbeat(health))
 
     def _publish_heartbeat(self) -> None:
@@ -225,6 +226,7 @@ class PackmlNode(Node):
             health.action = latch.action
             health.error_code = latch.error_code
             health.message = latch.message
+            health.instance_id = latch.instance_id
         else:
             health = self.get_health_status()
         self._heartbeat_pub.publish(self._make_heartbeat(health))
