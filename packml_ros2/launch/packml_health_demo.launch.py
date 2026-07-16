@@ -114,6 +114,14 @@ def generate_launch_description():
                 'heartbeat_timeout_factor': 3.0,
                 'heartbeat_startup_grace_ms': 10000,
                 'manual_mode_allows_health_bypass': False,
+                # Aggregated at build time from config/error_map.yaml by
+                # packml_ros_aggregate_error_catalog() — see CMakeLists.txt.
+                'error_catalog_file': os.path.join(
+                    get_package_share_directory('packml_ros2'),
+                    'config',
+                    'machine_error_catalog.yaml'
+                ),
+                'language': 'en',
             }],
             arguments=['--ros-args', '--log-level', 'packml_ros:=debug'],
             output='screen',

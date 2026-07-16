@@ -15,7 +15,8 @@
 #include "packml_ros/error_catalog.hpp"
 
 #include <algorithm>
-#include <set>
+#include <filesystem>
+#include <system_error>
 
 #include <yaml-cpp/yaml.h>
 
@@ -27,6 +28,23 @@ namespace packml_ros {
 
 namespace {
 constexpr const char * kInstancePlaceholder = "{instance}";
+
+/// Substituted for {instance} when resolve_message() has no instance_id to work
+/// with, so an instanced fault raised without one still reads as prose instead
+/// of leaking the raw template placeholder.
+constexpr const char * kUnspecifiedInstanceLabel = "(unspecified)";
+
+/// Defense-in-depth cap on machine_error_catalog.yaml's file size, checked
+/// before handing it to yaml-cpp. This file is a build-generated artifact
+/// (the aggregation tool is where a vendor's raw, untrusted per-node catalog
+/// is actually parsed — see aggregate_error_catalog.py's own, stricter
+/// per-file bound and node-count-limited loader), not third-party input
+/// itself, so this is a narrower defense: it catches an oversized or
+/// corrupted/tampered file at the manager's one remaining YAML entry point,
+/// not a full mitigation against a maliciously crafted document (yaml-cpp's
+/// recursive-descent parser has no exposed hook to bound node/anchor count
+/// the way the Python loader's compose_node override does).
+constexpr std::uintmax_t kMaxMachineCatalogBytes = 10 * 1024 * 1024;  // 10 MB
 
 bool has_instance_placeholder(const ErrorEntry & entry)
 {
@@ -59,48 +77,6 @@ std::string ErrorEntry::description(const std::string & locale) const
 }
 
 // ---------------------------------------------------------------------------
-// NodeCatalog
-// ---------------------------------------------------------------------------
-
-const ErrorEntry * NodeCatalog::find(int32_t code) const
-{
-  for (const auto & entry : entries) {
-    if (entry.code == code) {
-      return &entry;
-    }
-  }
-  return nullptr;
-}
-
-// ---------------------------------------------------------------------------
-// ErrorCatalog
-// ---------------------------------------------------------------------------
-
-void ErrorCatalog::load_node_catalog(const NodeCatalog & catalog)
-{
-  catalogs_[catalog.node_name] = catalog;
-}
-
-const ErrorEntry * ErrorCatalog::find(const std::string & node_name, int32_t code) const
-{
-  const auto it = catalogs_.find(node_name);
-  if (it == catalogs_.end()) {
-    return nullptr;
-  }
-  return it->second.find(code);
-}
-
-std::vector<NodeCatalog> ErrorCatalog::all() const
-{
-  std::vector<NodeCatalog> out;
-  out.reserve(catalogs_.size());
-  for (const auto & [name, cat] : catalogs_) {
-    out.push_back(cat);
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
 // Action name mapping
 // ---------------------------------------------------------------------------
 
@@ -115,145 +91,16 @@ int32_t action_from_string(const std::string & action_name)
   return NodeHealth::NONE;
 }
 
-std::string action_to_string(int32_t action)
+namespace {
+/// True if `name` is one of action_from_string's recognized inputs — used by the
+/// machine loader to warn on a typo/unrecognized action instead of silently
+/// treating it as NONE (a real, safety-relevant classification in its own right).
+bool is_known_action_name(const std::string & name)
 {
-  using NodeHealth = packml_msgs::msg::NodeHealth;
-  switch (action) {
-    case NodeHealth::NONE: return "NONE";
-    case NodeHealth::WARN: return "WARN";
-    case NodeHealth::HOLD: return "HOLD";
-    case NodeHealth::SUSPEND: return "SUSPEND";
-    case NodeHealth::ABORT: return "ABORT";
-    default: return "NONE";
-  }
+  return name == "NONE" || name == "WARN" || name == "HOLD" ||
+         name == "SUSPEND" || name == "ABORT";
 }
-
-// ---------------------------------------------------------------------------
-// YAML loading
-// ---------------------------------------------------------------------------
-
-CatalogLoadResult load_node_catalog_from_yaml(const std::string & path)
-{
-  CatalogLoadResult result;
-
-  YAML::Node root;
-  try {
-    root = YAML::LoadFile(path);
-  } catch (const std::exception & e) {
-    result.ok = false;
-    result.error = "Failed to load error catalog YAML '" + path + "': " + e.what();
-    return result;
-  }
-
-  if (!root[schema::kNodeNameKey]) {
-    result.ok = false;
-    result.error = "Error catalog YAML '" + path + "' has no '" + schema::kNodeNameKey + "' key";
-    return result;
-  }
-  result.catalog.node_name = root[schema::kNodeNameKey].as<std::string>();
-
-  // --- error_codes: name → int (authoritative set of codes) ---
-  std::map<std::string, int32_t> code_by_name;
-  std::set<int32_t> seen_codes;
-  if (root[schema::kErrorCodesKey]) {
-    for (const auto & kv : root[schema::kErrorCodesKey]) {
-      const auto name = kv.first.as<std::string>();
-      const auto code = kv.second.as<int32_t>();
-
-      if (code == 0) {
-        result.warnings.push_back(
-          "error code '" + name + "' uses reserved value 0 — entry rejected");
-        continue;
-      }
-      if (!seen_codes.insert(code).second) {
-        result.warnings.push_back(
-          "duplicate error code value " + std::to_string(code) +
-          " ('" + name + "') — last wins");
-      }
-      code_by_name[name] = code;
-    }
-  } else {
-    result.warnings.push_back(std::string("no '") + schema::kErrorCodesKey + "' section found");
-  }
-
-  // --- descriptions: name → { action, severity, <locale>: text, ... } ---
-  std::set<std::string> described_names;
-  if (root[schema::kDescriptionsKey]) {
-    for (const auto & kv : root[schema::kDescriptionsKey]) {
-      const auto name = kv.first.as<std::string>();
-      const YAML::Node & block = kv.second;
-      described_names.insert(name);
-
-      const auto code_it = code_by_name.find(name);
-      if (code_it == code_by_name.end()) {
-        result.warnings.push_back(
-          "description '" + name + "' has no matching entry in error_codes — ignored");
-        continue;
-      }
-
-      ErrorEntry entry;
-      entry.code = code_it->second;
-      entry.name = name;
-
-      for (const auto & field : block) {
-        const auto key = field.first.as<std::string>();
-        if (key == schema::kActionKey) {
-          entry.action = action_from_string(field.second.as<std::string>());
-        } else if (key == schema::kSeverityKey) {
-          entry.severity = field.second.as<std::string>();
-        } else if (key == schema::kCategoryKey) {
-          entry.category = field.second.as<std::string>();
-        } else if (key == schema::kInstancedKey) {
-          entry.instanced = field.second.as<bool>();
-        } else {
-          // Anything else is treated as a locale → description text.
-          entry.descriptions[key] = field.second.as<std::string>();
-        }
-      }
-
-      if (entry.descriptions.empty()) {
-        result.warnings.push_back(
-          "error code '" + name + "' has no locale descriptions");
-      }
-
-      // Instanced entries must carry the {instance} placeholder in every locale;
-      // plain entries must not carry it anywhere.
-      for (const auto & [locale, text] : entry.descriptions) {
-        const bool has_placeholder = text.find(kInstancePlaceholder) != std::string::npos;
-        if (entry.instanced && !has_placeholder) {
-          result.warnings.push_back(
-            "instanced error code '" + name + "' description [" + locale +
-            "] has no \"{instance}\" placeholder");
-        } else if (!entry.instanced && has_placeholder) {
-          result.warnings.push_back(
-            "non-instanced error code '" + name + "' description [" + locale +
-            "] contains a \"{instance}\" placeholder");
-        }
-      }
-
-      result.catalog.entries.push_back(std::move(entry));
-    }
-  } else {
-    result.warnings.push_back(std::string("no '") + schema::kDescriptionsKey + "' section found");
-  }
-
-  // --- Validate: every code must have a description ---
-  for (const auto & [name, code] : code_by_name) {
-    if (described_names.find(name) == described_names.end()) {
-      result.warnings.push_back(
-        "error code '" + name + "' (" + std::to_string(code) +
-        ") has no description block");
-    }
-  }
-
-  // Keep entries sorted by code for stable export ordering.
-  std::sort(
-    result.catalog.entries.begin(), result.catalog.entries.end(),
-    [](const ErrorEntry & a, const ErrorEntry & b) { return a.code < b.code; });
-
-  result.ok = true;
-  return result;
-}
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // MachineCatalog
@@ -361,17 +208,20 @@ std::string MachineCatalog::resolve_message(
   const std::string & instance_id) const
 {
   std::string text = entry.description(locale);
+  const std::string placeholder = kInstancePlaceholder;
+  if (text.find(placeholder) == std::string::npos) {
+    return text;
+  }
 
-  // A blank instance_id leaves the template unfilled (e.g. a service lookup with
-  // no instance); a populated one substitutes the localized label everywhere.
-  if (!instance_id.empty()) {
-    const std::string placeholder = kInstancePlaceholder;
-    const std::string label = instance_label(instance_id, locale);
-    for (std::size_t pos = text.find(placeholder); pos != std::string::npos;
-      pos = text.find(placeholder, pos + label.size()))
-    {
-      text.replace(pos, placeholder.size(), label);
-    }
+  // A blank instance_id (e.g. an instanced fault raised without one) has no
+  // per-instance context to substitute — fall back to a neutral label rather
+  // than shipping the raw "{instance}" template syntax to an operator.
+  const std::string label =
+    instance_id.empty() ? kUnspecifiedInstanceLabel : instance_label(instance_id, locale);
+  for (std::size_t pos = text.find(placeholder); pos != std::string::npos;
+    pos = text.find(placeholder, pos + label.size()))
+  {
+    text.replace(pos, placeholder.size(), label);
   }
   return text;
 }
@@ -406,6 +256,16 @@ MachineCatalogLoadResult load_machine_catalog_from_yaml(const std::string & path
 {
   MachineCatalogLoadResult result;
 
+  std::error_code fs_error;
+  const auto file_size = std::filesystem::file_size(path, fs_error);
+  if (!fs_error && file_size > kMaxMachineCatalogBytes) {
+    result.ok = false;
+    result.error = "Machine error catalog YAML '" + path + "' is " +
+      std::to_string(file_size) + " bytes, over the " +
+      std::to_string(kMaxMachineCatalogBytes) + "-byte safety limit";
+    return result;
+  }
+
   YAML::Node root;
   try {
     root = YAML::LoadFile(path);
@@ -419,7 +279,13 @@ MachineCatalogLoadResult load_machine_catalog_from_yaml(const std::string & path
   // valid YAML of the wrong shape (an overflowing global, a scalar where a map
   // is expected, a non-bool flag). Parse defensively so such a file fails open
   // — ok == false — rather than throwing a yaml-cpp exception out of the
-  // manager's init(), which the fail-open contract (design §6) forbids.
+  // manager's init() — a bad catalog must degrade text, never crash the manager.
+  // Counts entries actually added below; a file that parses but recognizes
+  // neither a 'reserved' nor a 'nodes' entry has silently degraded to nothing
+  // (e.g. a wrong top-level key from a format drift) and must fail, not load an
+  // empty catalog that then enriches nothing with no visible cause.
+  std::size_t entries_added = 0;
+
   try {
     // --- languages ---
     std::vector<std::string> languages;
@@ -463,12 +329,32 @@ MachineCatalogLoadResult load_machine_catalog_from_yaml(const std::string & path
           if (key == schema::kGlobalKey) {
             continue;
           } else if (key == schema::kActionKey) {
-            me.entry.action = action_from_string(field.second.as<std::string>());
+            const auto action_str = field.second.as<std::string>();
+            if (!is_known_action_name(action_str)) {
+              result.warnings.push_back(
+                "reserved '" + name + "' has unrecognized action '" + action_str +
+                "' — treated as NONE");
+            }
+            me.entry.action = action_from_string(action_str);
           } else if (key == schema::kSeverityKey) {
             me.entry.severity = field.second.as<std::string>();
           } else if (key == schema::kCategoryKey) {
             me.entry.category = field.second.as<std::string>();
           } else {
+            // Anything else is treated as a locale → description text. If the
+            // file declares a 'languages:' list, a key outside it is very
+            // likely a misspelled field name (e.g. "sevrity") rather than a
+            // real, unconfigured locale — warn instead of silently absorbing
+            // it as a locale with a blank severity/action/category left behind.
+            if (!languages.empty() &&
+              std::find(languages.begin(), languages.end(), key) == languages.end())
+            {
+              result.warnings.push_back(
+                "reserved '" + name + "' has key '" + key +
+                "' which is not in the configured 'languages' list — treated as a "
+                "locale description, but check for a typo of a field name "
+                "(global/action/severity/category)");
+            }
             me.entry.descriptions[key] = field.second.as<std::string>();
           }
         }
@@ -480,6 +366,7 @@ MachineCatalogLoadResult load_machine_catalog_from_yaml(const std::string & path
             " (reserved '" + name + "') — last wins");
         }
         result.catalog.add_reserved_entry(name, me);
+        ++entries_added;
       }
     }
 
@@ -503,12 +390,28 @@ MachineCatalogLoadResult load_machine_catalog_from_yaml(const std::string & path
           if (cb[schema::kNameKey]) {me.entry.name = cb[schema::kNameKey].as<std::string>();}
           if (cb[schema::kSeverityKey]) {me.entry.severity = cb[schema::kSeverityKey].as<std::string>();}
           if (cb[schema::kCategoryKey]) {me.entry.category = cb[schema::kCategoryKey].as<std::string>();}
-          if (cb[schema::kActionKey]) {me.entry.action = action_from_string(cb[schema::kActionKey].as<std::string>());}
+          if (cb[schema::kActionKey]) {
+            const auto action_str = cb[schema::kActionKey].as<std::string>();
+            if (!is_known_action_name(action_str)) {
+              result.warnings.push_back(
+                "node '" + node_name + "' code " + std::to_string(me.entry.code) +
+                " has unrecognized action '" + action_str + "' — treated as NONE");
+            }
+            me.entry.action = action_from_string(action_str);
+          }
           if (cb[schema::kInstancedKey]) {me.entry.instanced = cb[schema::kInstancedKey].as<bool>();}
           if (cb[schema::kDescriptionsKey]) {
             for (const auto & desc : cb[schema::kDescriptionsKey]) {
-              me.entry.descriptions[desc.first.as<std::string>()] =
-                desc.second.as<std::string>();
+              const auto locale = desc.first.as<std::string>();
+              if (!languages.empty() &&
+                std::find(languages.begin(), languages.end(), locale) == languages.end())
+              {
+                result.warnings.push_back(
+                  "node '" + node_name + "' code " + std::to_string(me.entry.code) +
+                  " has a description locale '" + locale +
+                  "' which is not in the configured 'languages' list — check for a typo");
+              }
+              me.entry.descriptions[locale] = desc.second.as<std::string>();
             }
           }
 
@@ -519,12 +422,20 @@ MachineCatalogLoadResult load_machine_catalog_from_yaml(const std::string & path
               ") — last wins");
           }
           result.catalog.add_node_entry(me);
+          ++entries_added;
         }
       }
     }
   } catch (const std::exception & e) {
     result.ok = false;
     result.error = "Failed to parse machine error catalog YAML '" + path + "': " + e.what();
+    return result;
+  }
+
+  if (entries_added == 0) {
+    result.ok = false;
+    result.error = "Machine error catalog '" + path +
+      "' recognized no 'reserved' or 'nodes' entries";
     return result;
   }
 

@@ -179,6 +179,15 @@ inside it. The periodic timer checks whether heartbeats are paused *before* call
 `get_health_status()`, so a state-mutating getter can silently make its own follow-up
 logic unreachable.
 
+## Error catalog
+
+Turns a bare `NodeHealth.error_code` integer into a symbolic name, a
+human-readable (optionally multi-language) description, and a
+globally-unique fault number safe to show on an HMI or fault sheet. It's an
+optional layer on top of the health/heartbeat mechanism above — see
+[ERROR_CATALOG.md](ERROR_CATALOG.md) for how to add it to your own node and
+bringup packages.
+
 ## Contributors
 * Dejanira Araiza Illan
 * Chen Bainian

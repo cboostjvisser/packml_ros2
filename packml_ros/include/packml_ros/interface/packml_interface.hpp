@@ -910,6 +910,19 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
           machine_catalog_.resolve_message(entry->entry, catalog_language_, ev.instance_id);
         message = ev.message.empty() ? resolved : resolved + ": " + ev.message;
         global_code = static_cast<uint32_t>(entry->global);
+
+        // The catalog's `action` is documentation only — the SM only ever
+        // reacts to the runtime NodeHealth.action a node actually emits
+        // (ev.severity here). If they disagree, the fault sheet/HMI would
+        // show one reaction while the machine does another — surface it
+        // instead of letting the two silently drift apart.
+        if (entry->entry.action != ev.severity) {
+          RCLCPP_WARN_THROTTLE(rclcpp::get_logger("packml_ros"), *node_->get_clock(), 5000,
+            "[ErrorCatalog] node '%s' error_code=%d emitted action %d but the catalog "
+            "documents action %d for this fault — the fault sheet/HMI and the machine's "
+            "actual reaction disagree; update the catalog or the node",
+            ev.node_name.c_str(), ev.error_code, ev.severity, entry->entry.action);
+        }
       } else if (!ev.is_timeout && ev.error_code != 0) {
         RCLCPP_WARN_THROTTLE(rclcpp::get_logger("packml_ros"), *node_->get_clock(), 5000,
           "[ErrorCatalog] node '%s' error_code=%d has no catalog entry — "

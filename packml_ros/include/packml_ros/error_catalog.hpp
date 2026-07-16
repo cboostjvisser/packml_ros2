@@ -15,14 +15,17 @@
 // ---
 // ErrorCatalog — implementor-defined error codes with multi-language descriptions.
 //
-// The error code integers are strictly typed in C++ (generated from the YAML
-// `error_codes:` section at build time — see cmake/generate_error_codes_header.py).
-// The descriptions (text, locales) are loaded at runtime from the same YAML's
-// `descriptions:` section, so translations can be updated without recompiling.
+// The error code integers are strictly typed in C++ (generated from each node's
+// per-node YAML `error_codes:` section at build time — see
+// cmake/generate_error_codes_header.py). Per-node YAML is otherwise parsed only by
+// the (Python) offline aggregation tool, which folds every node's codes and
+// descriptions into one machine_error_catalog.yaml; MachineCatalog below is what
+// actually loads that at runtime, so translations can be updated by re-aggregating
+// without recompiling.
 //
-// This header has no ROS/packml_msgs dependency; action_from_string/action_to_string
-// below map action names to NodeHealth constants and are implemented in
-// error_catalog.cpp, which is the only file in this library that includes packml_msgs.
+// This header has no ROS/packml_msgs dependency; action_from_string below maps
+// action names to NodeHealth constants and is implemented in error_catalog.cpp,
+// which is the only file in this library that includes packml_msgs.
 
 #pragma once
 
@@ -52,76 +55,13 @@ struct ErrorEntry
   std::string description(const std::string & locale) const;
 };
 
-/// All error entries for a single Equipment Module.
-struct NodeCatalog
-{
-  std::string node_name;
-  std::vector<ErrorEntry> entries;
-
-  /// Find an entry by code.  Returns nullptr if not present.
-  const ErrorEntry * find(int32_t code) const;
-};
-
-/// System-wide catalog: aggregates per-node catalogs in the manager.
-class ErrorCatalog
-{
-public:
-  /// Add or replace a node's catalog (keyed by node_name).
-  void load_node_catalog(const NodeCatalog & catalog);
-
-  /// Look up an entry by node name + code.  Returns nullptr if not found.
-  const ErrorEntry * find(const std::string & node_name, int32_t code) const;
-
-  /// All registered node catalogs (for publishing / export).
-  std::vector<NodeCatalog> all() const;
-
-  /// Number of registered nodes.
-  std::size_t size() const { return catalogs_.size(); }
-
-private:
-  std::map<std::string, NodeCatalog> catalogs_;
-};
-
 // ---------------------------------------------------------------------------
-// YAML loading
+// Action name mapping
 // ---------------------------------------------------------------------------
 
 /// Map a PackML action name ("NONE","WARN","HOLD","SUSPEND","ABORT") to its
 /// NodeHealth action integer.  Unknown names map to 0 (NONE).
 int32_t action_from_string(const std::string & action_name);
-
-/// Inverse of action_from_string.
-std::string action_to_string(int32_t action);
-
-/// Result of loading a catalog YAML, including non-fatal validation warnings.
-struct CatalogLoadResult
-{
-  bool ok{false};                       ///< false → file missing / parse error / no node_name
-  NodeCatalog catalog;
-  std::vector<std::string> warnings;    ///< e.g. code with no description, duplicate code
-  std::string error;                    ///< populated when ok == false
-};
-
-/// Load a NodeCatalog from a YAML file.
-///
-/// Expected YAML structure:
-///   node_name: motor_driver_node
-///   error_codes:        # name → int
-///     OVERCURRENT: 301
-///   descriptions:       # name → { action, severity, <locale>: text, ... }
-///     OVERCURRENT:
-///       action: ABORT
-///       severity: CRITICAL
-///       en: "Motor overcurrent detected"
-///
-/// Validation (non-fatal, recorded in warnings):
-///   - code 0 is reserved → entry rejected
-///   - duplicate code within the node → last wins
-///   - error_codes key with no matching descriptions entry
-///   - descriptions key with no matching error_codes entry
-///   - instanced entry whose description text omits the {instance} placeholder
-///     (or a non-instanced entry whose text contains it)
-CatalogLoadResult load_node_catalog_from_yaml(const std::string & path);
 
 // ---------------------------------------------------------------------------
 // MachineCatalog — the integrated, global-numbered catalog
@@ -168,7 +108,8 @@ public:
 
   /// Resolve an operator message: entry.description(locale) with a {instance}
   /// placeholder (if any) replaced by the localized instance label.  A blank
-  /// instance_id leaves the template unfilled.
+  /// instance_id substitutes a neutral "(unspecified)" label instead of
+  /// leaking the raw template placeholder.
   std::string resolve_message(
     const ErrorEntry & entry, const std::string & locale,
     const std::string & instance_id) const;
@@ -209,7 +150,8 @@ private:
 /// Result of loading the machine catalog YAML, including non-fatal warnings.
 struct MachineCatalogLoadResult
 {
-  bool ok{false};                       ///< false → file missing / parse error
+  bool ok{false};                       ///< false → file missing / parse error /
+                                         ///< recognized zero 'reserved' or 'nodes' entries
   MachineCatalog catalog;
   std::vector<std::string> warnings;
   std::string error;                    ///< populated when ok == false

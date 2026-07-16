@@ -1,0 +1,69 @@
+# Copyright (c) 2026 PackML ROS2 Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# ---
+# Demo error catalog for packml_health_demo.launch.py's three simulated
+# Equipment Modules (example_health_demo.cpp: motor/sensor/conveyor). One file
+# covering all three — packml_ros2/config/error_map.yaml maps each simulated
+# EM's runtime node name to this SAME catalog with its own `base:` offset (the
+# same "shared catalog across multiple runtime instances" pattern documented
+# in error_map.yaml, just applied across the demo's three EM roles instead of
+# multiple instances of one role). Installed to share/ (see CMakeLists.txt) —
+# every vendor node package must install its own catalog the same way, since
+# the aggregation tool only resolves package:// URIs against installed files.
+node_name: packml_health_demo
+error_codes:
+  TEMP_WARNING: 100
+  TEMP_CRITICAL: 101
+  OVERCURRENT: 200
+  SENSOR_DISCONNECTED: 300
+  SENSOR_OUT_OF_RANGE: 301
+  CONVEYOR_JAM: 400
+  CONVEYOR_STARVED: 401
+descriptions:
+  TEMP_WARNING:
+    action: WARN
+    severity: WARNING
+    category: thermal
+    en: "Motor temperature elevated"
+  TEMP_CRITICAL:
+    action: HOLD
+    severity: ERROR
+    category: thermal
+    en: "Motor over-temperature"
+  OVERCURRENT:
+    action: ABORT
+    severity: CRITICAL
+    category: electrical
+    en: "Motor overcurrent"
+  SENSOR_DISCONNECTED:
+    action: HOLD
+    severity: ERROR
+    category: sensor
+    en: "Sensor disconnected"
+  SENSOR_OUT_OF_RANGE:
+    action: SUSPEND
+    severity: WARNING
+    category: sensor
+    en: "Sensor reading out of range"
+  CONVEYOR_JAM:
+    action: HOLD
+    severity: ERROR
+    category: mechanical
+    en: "Conveyor jam detected"
+  CONVEYOR_STARVED:
+    action: SUSPEND
+    severity: WARNING
+    category: mechanical
+    en: "Conveyor starved of product"

@@ -22,11 +22,21 @@
   <exec_depend>packml_sm</exec_depend>
   <exec_depend>libqt5-core</exec_depend>
   <exec_depend>yaml-cpp</exec_depend>
+  <!-- aggregate_error_catalog.py: PyYAML for per-node/error_map parsing,
+       ament_index_python for package:// catalog-path resolution. <depend>,
+       not <exec_depend>: downstream bringup packages invoke this script at
+       THEIR build time via the exported packml_ros_aggregate_error_catalog()
+       CMake function (mirrors the packml_ros depend in packml_ros2/package.xml
+       for the same reason), and packml_ros's own pytest suite exercises it at
+       test time too. -->
+  <depend>python3-yaml</depend>
+  <depend>ament_index_python</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_cmake_gmock</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

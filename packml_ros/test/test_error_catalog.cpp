@@ -13,7 +13,7 @@
 // limitations under the License.
 //
 // ---
-// Tests for the ErrorCatalog core (pure C++, no ROS node required).
+// Tests for the MachineCatalog core (pure C++, no ROS node required).
 
 #include <gtest/gtest.h>
 
@@ -26,11 +26,7 @@
 #include "packml_ros/error_catalog.hpp"
 #include "packml_msgs/msg/node_health.hpp"
 
-using packml_ros::ErrorCatalog;
 using packml_ros::ErrorEntry;
-using packml_ros::NodeCatalog;
-using packml_ros::CatalogLoadResult;
-using packml_ros::load_node_catalog_from_yaml;
 using packml_ros::MachineCatalog;
 using packml_ros::MachineEntry;
 using packml_ros::MachineCatalogLoadResult;
@@ -74,31 +70,6 @@ bool has_warning_containing(
     warnings.begin(), warnings.end(),
     [&](const std::string & w) { return w.find(needle) != std::string::npos; });
 }
-
-const char * kMotorYaml = R"(
-node_name: motor_driver_node
-error_codes:
-  OVERCURRENT: 301
-  OVER_TEMPERATURE: 302
-  ENCODER_DEGRADED: 200
-descriptions:
-  OVERCURRENT:
-    action: ABORT
-    severity: CRITICAL
-    en: "Motor overcurrent detected"
-    nl: "Motor overstroom gedetecteerd"
-    de: "Motor Ueberstrom erkannt"
-  OVER_TEMPERATURE:
-    action: HOLD
-    severity: ERROR
-    en: "Motor over-temperature"
-    nl: "Motor te hoog temperatuur"
-  ENCODER_DEGRADED:
-    action: WARN
-    severity: WARNING
-    en: "Encoder signal degraded"
-    nl: "Encoder signaal verminderd"
-)";
 
 // A generated machine_error_catalog.yaml, as produced by the offline aggregation
 // tool: two nodes (motor at base 1000, gripper at base 5000), a reserved
@@ -153,33 +124,6 @@ nodes:
           en: "Gripper fault"
 )";
 
-// A node catalog exercising the instanced/category fields and the placeholder
-// lint: E_STOP is correctly instanced, DOOR is instanced but its text omits
-// {instance}, BADPLAIN is plain but its text carries {instance}.
-const char * kSafetyYaml = R"(
-node_name: safety_node
-error_codes:
-  E_STOP: 10
-  DOOR: 20
-  BADPLAIN: 30
-descriptions:
-  E_STOP:
-    action: ABORT
-    severity: CRITICAL
-    category: safety
-    instanced: true
-    en: "Emergency stop triggered at {instance}"
-  DOOR:
-    action: ABORT
-    severity: CRITICAL
-    instanced: true
-    en: "Guard door open"
-  BADPLAIN:
-    action: WARN
-    severity: WARNING
-    en: "Something happened at {instance}"
-)";
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -195,356 +139,6 @@ TEST(ErrorCatalogAction, StringToActionMapping)
   EXPECT_EQ(packml_ros::action_from_string("ABORT"), NodeHealth::ABORT);
   // Unknown → NONE
   EXPECT_EQ(packml_ros::action_from_string("BOGUS"), NodeHealth::NONE);
-}
-
-TEST(ErrorCatalogAction, ActionToStringRoundTrip)
-{
-  EXPECT_EQ(packml_ros::action_to_string(NodeHealth::ABORT), "ABORT");
-  EXPECT_EQ(packml_ros::action_to_string(NodeHealth::HOLD), "HOLD");
-  EXPECT_EQ(packml_ros::action_to_string(NodeHealth::WARN), "WARN");
-}
-
-// ---------------------------------------------------------------------------
-// YAML loaded on init — all entries parsed
-// ---------------------------------------------------------------------------
-
-TEST(ErrorCatalogLoad, LoadsAllEntries)
-{
-  TempYaml yaml(kMotorYaml);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-
-  ASSERT_TRUE(result.ok) << result.error;
-  EXPECT_EQ(result.catalog.node_name, "motor_driver_node");
-  EXPECT_EQ(result.catalog.entries.size(), 3u);
-}
-
-TEST(ErrorCatalogLoad, MissingFileFailsGracefully)
-{
-  auto result = load_node_catalog_from_yaml("/nonexistent/path/does_not_exist.yaml");
-  EXPECT_FALSE(result.ok);
-  EXPECT_FALSE(result.error.empty());
-}
-
-TEST(ErrorCatalogLoad, MissingNodeNameFails)
-{
-  TempYaml yaml("error_codes:\n  FOO: 1\n");
-  auto result = load_node_catalog_from_yaml(yaml.path());
-  EXPECT_FALSE(result.ok);
-}
-
-// ---------------------------------------------------------------------------
-// find(node, code) returns correct entry
-// ---------------------------------------------------------------------------
-
-TEST(ErrorCatalogLoad, FindReturnsCorrectEntry)
-{
-  TempYaml yaml(kMotorYaml);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-  ASSERT_TRUE(result.ok);
-
-  const ErrorEntry * e = result.catalog.find(301);
-  ASSERT_NE(e, nullptr);
-  EXPECT_EQ(e->name, "OVERCURRENT");
-  EXPECT_EQ(e->action, NodeHealth::ABORT);
-  EXPECT_EQ(e->severity, "CRITICAL");
-  EXPECT_EQ(e->description("en"), "Motor overcurrent detected");
-  EXPECT_EQ(e->description("nl"), "Motor overstroom gedetecteerd");
-}
-
-// ---------------------------------------------------------------------------
-// missing locale falls back to "en"
-// ---------------------------------------------------------------------------
-
-TEST(ErrorCatalogDescription, FallsBackToEnglish)
-{
-  TempYaml yaml(kMotorYaml);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-  ASSERT_TRUE(result.ok);
-
-  const ErrorEntry * e = result.catalog.find(302);  // has en, nl but no fr
-  ASSERT_NE(e, nullptr);
-  EXPECT_EQ(e->description("fr"), "Motor over-temperature");  // fr → en
-}
-
-// ---------------------------------------------------------------------------
-// missing "en" falls back to first entry
-// ---------------------------------------------------------------------------
-
-TEST(ErrorCatalogDescription, FallsBackToFirstWhenNoEnglish)
-{
-  const char * yaml_str = R"(
-node_name: test_node
-error_codes:
-  ONLY_NL: 42
-descriptions:
-  ONLY_NL:
-    action: HOLD
-    nl: "Alleen Nederlands"
-)";
-  TempYaml yaml(yaml_str);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-  ASSERT_TRUE(result.ok);
-
-  const ErrorEntry * e = result.catalog.find(42);
-  ASSERT_NE(e, nullptr);
-  EXPECT_EQ(e->description("fr"), "Alleen Nederlands");  // no en → first available
-}
-
-TEST(ErrorCatalogDescription, EmptyDescriptionsReturnsEmptyString)
-{
-  ErrorEntry e;
-  e.code = 1;
-  EXPECT_EQ(e.description("en"), "");
-}
-
-// ---------------------------------------------------------------------------
-// unknown code returns nullptr
-// ---------------------------------------------------------------------------
-
-TEST(ErrorCatalogLoad, UnknownCodeReturnsNullptr)
-{
-  TempYaml yaml(kMotorYaml);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-  ASSERT_TRUE(result.ok);
-  EXPECT_EQ(result.catalog.find(999), nullptr);
-}
-
-// ---------------------------------------------------------------------------
-// code 0 rejected at load time (reserved)
-// ---------------------------------------------------------------------------
-
-TEST(ErrorCatalogLoad, CodeZeroRejected)
-{
-  const char * yaml_str = R"(
-node_name: test_node
-error_codes:
-  RESERVED: 0
-  VALID: 5
-descriptions:
-  RESERVED:
-    action: ABORT
-    en: "should be rejected"
-  VALID:
-    action: HOLD
-    en: "ok"
-)";
-  TempYaml yaml(yaml_str);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-  ASSERT_TRUE(result.ok);
-
-  EXPECT_EQ(result.catalog.find(0), nullptr);
-  EXPECT_NE(result.catalog.find(5), nullptr);
-  EXPECT_TRUE(has_warning_containing(result.warnings, "reserved value 0"));
-}
-
-// ---------------------------------------------------------------------------
-// duplicate code value → warning
-// ---------------------------------------------------------------------------
-
-TEST(ErrorCatalogLoad, DuplicateCodeValueWarns)
-{
-  const char * yaml_str = R"(
-node_name: test_node
-error_codes:
-  FIRST: 10
-  SECOND: 10
-descriptions:
-  FIRST:
-    action: HOLD
-    en: "first"
-  SECOND:
-    action: HOLD
-    en: "second"
-)";
-  TempYaml yaml(yaml_str);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-  ASSERT_TRUE(result.ok);
-  EXPECT_TRUE(has_warning_containing(result.warnings, "duplicate error code"));
-}
-
-// ---------------------------------------------------------------------------
-// two nodes with same code value — independent (no collision)
-// ---------------------------------------------------------------------------
-
-TEST(ErrorCatalogAggregate, TwoNodesSameCodeIndependent)
-{
-  const char * node_a = R"(
-node_name: node_a
-error_codes:
-  FAULT: 100
-descriptions:
-  FAULT:
-    action: HOLD
-    en: "Node A fault"
-)";
-  const char * node_b = R"(
-node_name: node_b
-error_codes:
-  FAULT: 100
-descriptions:
-  FAULT:
-    action: ABORT
-    en: "Node B fault"
-)";
-  TempYaml ya(node_a);
-  TempYaml yb(node_b);
-  auto ra = load_node_catalog_from_yaml(ya.path());
-  auto rb = load_node_catalog_from_yaml(yb.path());
-  ASSERT_TRUE(ra.ok);
-  ASSERT_TRUE(rb.ok);
-
-  ErrorCatalog cat;
-  cat.load_node_catalog(ra.catalog);
-  cat.load_node_catalog(rb.catalog);
-
-  EXPECT_EQ(cat.size(), 2u);
-  ASSERT_NE(cat.find("node_a", 100), nullptr);
-  ASSERT_NE(cat.find("node_b", 100), nullptr);
-  EXPECT_EQ(cat.find("node_a", 100)->description("en"), "Node A fault");
-  EXPECT_EQ(cat.find("node_b", 100)->description("en"), "Node B fault");
-  EXPECT_EQ(cat.find("node_a", 100)->action, NodeHealth::HOLD);
-  EXPECT_EQ(cat.find("node_b", 100)->action, NodeHealth::ABORT);
-}
-
-TEST(ErrorCatalogAggregate, UnknownNodeReturnsNullptr)
-{
-  ErrorCatalog cat;
-  EXPECT_EQ(cat.find("ghost_node", 1), nullptr);
-}
-
-// ---------------------------------------------------------------------------
-// code in error_codes missing from descriptions → warning
-// ---------------------------------------------------------------------------
-
-TEST(ErrorCatalogLoad, MissingDescriptionWarns)
-{
-  const char * yaml_str = R"(
-node_name: test_node
-error_codes:
-  DOCUMENTED: 1
-  UNDOCUMENTED: 2
-descriptions:
-  DOCUMENTED:
-    action: HOLD
-    en: "has a description"
-)";
-  TempYaml yaml(yaml_str);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-  ASSERT_TRUE(result.ok);
-  EXPECT_TRUE(has_warning_containing(result.warnings, "UNDOCUMENTED"));
-
-  // The documented code is still queryable.
-  EXPECT_NE(result.catalog.find(1), nullptr);
-  // The undocumented code has no description block, so it is not in entries.
-  EXPECT_EQ(result.catalog.find(2), nullptr);
-}
-
-TEST(ErrorCatalogLoad, OrphanDescriptionWarns)
-{
-  const char * yaml_str = R"(
-node_name: test_node
-error_codes:
-  REAL: 1
-descriptions:
-  REAL:
-    action: HOLD
-    en: "real"
-  ORPHAN:
-    action: ABORT
-    en: "no matching code"
-)";
-  TempYaml yaml(yaml_str);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-  ASSERT_TRUE(result.ok);
-  EXPECT_TRUE(has_warning_containing(result.warnings, "ORPHAN"));
-  EXPECT_EQ(result.catalog.entries.size(), 1u);
-}
-
-// ---------------------------------------------------------------------------
-// Entries are sorted by code (stable export ordering)
-// ---------------------------------------------------------------------------
-
-TEST(ErrorCatalogLoad, EntriesSortedByCode)
-{
-  TempYaml yaml(kMotorYaml);  // codes 301, 302, 200
-  auto result = load_node_catalog_from_yaml(yaml.path());
-  ASSERT_TRUE(result.ok);
-  ASSERT_EQ(result.catalog.entries.size(), 3u);
-  EXPECT_EQ(result.catalog.entries[0].code, 200);
-  EXPECT_EQ(result.catalog.entries[1].code, 301);
-  EXPECT_EQ(result.catalog.entries[2].code, 302);
-}
-
-// ---------------------------------------------------------------------------
-// load_node_catalog replaces an existing node's catalog (last wins)
-// ---------------------------------------------------------------------------
-
-TEST(ErrorCatalogAggregate, ReloadReplacesNode)
-{
-  ErrorCatalog cat;
-
-  NodeCatalog v1;
-  v1.node_name = "node";
-  v1.entries.push_back(ErrorEntry{1, "OLD", NodeHealth::HOLD, "ERROR", {{"en", "old"}}, "", false});
-  cat.load_node_catalog(v1);
-
-  NodeCatalog v2;
-  v2.node_name = "node";
-  v2.entries.push_back(ErrorEntry{2, "NEW", NodeHealth::ABORT, "CRITICAL", {{"en", "new"}}, "", false});
-  cat.load_node_catalog(v2);
-
-  EXPECT_EQ(cat.size(), 1u);
-  EXPECT_EQ(cat.find("node", 1), nullptr);     // old entry gone
-  ASSERT_NE(cat.find("node", 2), nullptr);     // new entry present
-  EXPECT_EQ(cat.find("node", 2)->description("en"), "new");
-}
-
-// ---------------------------------------------------------------------------
-// Node loader — instanced / category fields and the placeholder lint
-// ---------------------------------------------------------------------------
-
-TEST(ErrorCatalogLoad, CategoryParsed)
-{
-  TempYaml yaml(kSafetyYaml);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-
-  ASSERT_TRUE(result.ok) << result.error;
-  const auto * e = result.catalog.find(10);
-  ASSERT_NE(e, nullptr);
-  EXPECT_EQ(e->category, "safety");
-}
-
-TEST(ErrorCatalogLoad, InstancedFlagParsed)
-{
-  TempYaml yaml(kSafetyYaml);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-
-  ASSERT_TRUE(result.ok) << result.error;
-  const auto * e = result.catalog.find(10);
-  ASSERT_NE(e, nullptr);
-  EXPECT_TRUE(e->instanced);
-}
-
-TEST(ErrorCatalogLoad, InstancedTemplateMissingPlaceholderWarns)
-{
-  TempYaml yaml(kSafetyYaml);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-
-  ASSERT_TRUE(result.ok) << result.error;
-  // DOOR is instanced but its description has no {instance}.
-  EXPECT_TRUE(has_warning_containing(result.warnings, "DOOR"));
-  EXPECT_TRUE(has_warning_containing(result.warnings, "no \"{instance}\" placeholder"));
-}
-
-TEST(ErrorCatalogLoad, PlainEntryWithPlaceholderWarns)
-{
-  TempYaml yaml(kSafetyYaml);
-  auto result = load_node_catalog_from_yaml(yaml.path());
-
-  ASSERT_TRUE(result.ok) << result.error;
-  // BADPLAIN is not instanced but its description contains {instance}.
-  EXPECT_TRUE(has_warning_containing(result.warnings, "BADPLAIN"));
-  EXPECT_TRUE(has_warning_containing(result.warnings, "non-instanced"));
 }
 
 // ---------------------------------------------------------------------------
@@ -671,10 +265,11 @@ TEST(MachineCatalog, ResolveMessageSubstitutesInstanceAndFallsBackLocales)
     result.catalog.resolve_message(e->entry, "de", "cell_north"),
     "Emergency stop triggered at North Cell");
 
-  // Blank instance_id leaves the template unfilled.
+  // Blank instance_id has nothing to substitute — falls back to a neutral label
+  // rather than leaking the raw "{instance}" template syntax.
   EXPECT_EQ(
     result.catalog.resolve_message(e->entry, "en", ""),
-    "Emergency stop triggered at {instance}");
+    "Emergency stop triggered at (unspecified)");
 }
 
 TEST(MachineCatalog, MalformedMachineFileFailsGracefully)
@@ -684,6 +279,20 @@ TEST(MachineCatalog, MalformedMachineFileFailsGracefully)
 
   EXPECT_FALSE(result.ok);
   EXPECT_FALSE(result.error.empty());
+}
+
+// Defense-in-depth: an oversized machine catalog file (corrupted, tampered,
+// or simply misconfigured to point at the wrong file) fails open rather than
+// being handed to yaml-cpp — see kMaxMachineCatalogBytes.
+TEST(MachineCatalog, OversizedFileFailsOpen)
+{
+  std::string huge = "languages: [en]\n# padding\n";
+  huge += std::string(11 * 1024 * 1024, '#');  // 11 MiB, over the 10 MiB cap
+  TempYaml yaml(huge);
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+
+  EXPECT_FALSE(result.ok);
+  EXPECT_TRUE(has_warning_containing({result.error}, "safety limit"));
 }
 
 // Valid YAML of the wrong shape must fail open (ok == false), not throw out of
@@ -881,23 +490,114 @@ TEST(MachineCatalog, ResolveMessagePlainAndUnknownInstance)
     "Emergency stop triggered at unmapped_bay");
 }
 
-// The instanced placeholder lint runs per-locale: only the offending locale warns.
-TEST(ErrorCatalogLoad, InstancedMixedLocaleWarnsOnlyMissing)
+// A file that parses but recognizes neither a 'reserved' nor a 'nodes' entry has
+// silently degraded to nothing (e.g. a top-level key typo/format drift) and must
+// fail — an empty-but-"ok" catalog would enrich nothing with no visible cause.
+TEST(MachineCatalog, ZeroRecognizedEntriesFailsOpen)
+{
+  TempYaml yaml("languages: [en]\n");
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+
+  EXPECT_FALSE(result.ok);
+  EXPECT_FALSE(result.error.empty());
+}
+
+// A typo'd/unrecognized action name silently becoming NONE would drop a
+// safety-relevant classification with no trace — the loader must at least warn.
+TEST(MachineCatalog, UnrecognizedActionWarns)
 {
   TempYaml yaml(R"(
-node_name: safety_node
-error_codes:
-  E_STOP: 10
-descriptions:
-  E_STOP:
-    severity: CRITICAL
-    instanced: true
-    en: "Emergency stop at {instance}"
-    nl: "Noodstop"
+reserved:
+  door_fault:
+    global: 1
+    action: ABROT
+    en: "Door fault"
+nodes:
+  motor_driver_node:
+    codes:
+      301:
+        global: 1301
+        name: OVERCURRENT
+        action: BOGUS
+        descriptions:
+          en: "Motor overcurrent"
 )");
-  auto result = load_node_catalog_from_yaml(yaml.path());
+  auto result = load_machine_catalog_from_yaml(yaml.path());
   ASSERT_TRUE(result.ok) << result.error;
 
-  EXPECT_TRUE(has_warning_containing(result.warnings, "[nl] has no \"{instance}\""));
-  EXPECT_FALSE(has_warning_containing(result.warnings, "[en] has no \"{instance}\""));
+  EXPECT_TRUE(has_warning_containing(result.warnings, "reserved 'door_fault'"));
+  EXPECT_TRUE(has_warning_containing(result.warnings, "unrecognized action 'ABROT'"));
+  EXPECT_TRUE(has_warning_containing(result.warnings, "node 'motor_driver_node' code 301"));
+  EXPECT_TRUE(has_warning_containing(result.warnings, "unrecognized action 'BOGUS'"));
+
+  // Both still load, degraded to NONE rather than rejected outright (fail-open).
+  const auto * reserved = result.catalog.find_global(result.catalog.reserved("door_fault"));
+  ASSERT_NE(reserved, nullptr);
+  EXPECT_EQ(reserved->entry.action, NodeHealth::NONE);
+  const auto * node_entry = result.catalog.find("motor_driver_node", 301);
+  ASSERT_NE(node_entry, nullptr);
+  EXPECT_EQ(node_entry->entry.action, NodeHealth::NONE);
+}
+
+// A misspelled field name in a 'reserved' block (e.g. "sevrity" for "severity")
+// would otherwise be silently absorbed as a locale description with the real
+// severity left blank. Cross-checking against the file's own 'languages:' list
+// catches it without inventing a hardcoded locale vocabulary.
+TEST(MachineCatalog, ReservedUnconfiguredLocaleWarns)
+{
+  TempYaml yaml(R"(
+languages: [en, nl]
+reserved:
+  door_fault:
+    global: 1
+    sevrity: CRITICAL
+    en: "Door fault"
+)");
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+
+  EXPECT_TRUE(has_warning_containing(result.warnings, "reserved 'door_fault'"));
+  EXPECT_TRUE(has_warning_containing(result.warnings, "key 'sevrity'"));
+  EXPECT_TRUE(has_warning_containing(result.warnings, "not in the configured 'languages'"));
+
+  // Real severity stayed blank — exactly the silent-corruption risk being flagged.
+  const auto * reserved = result.catalog.find_global(result.catalog.reserved("door_fault"));
+  ASSERT_NE(reserved, nullptr);
+  EXPECT_TRUE(reserved->entry.severity.empty());
+}
+
+// Same cross-check for a per-node code's description locale keys.
+TEST(MachineCatalog, NodeDescriptionUnconfiguredLocaleWarns)
+{
+  TempYaml yaml(R"(
+languages: [en, nl]
+nodes:
+  motor_driver_node:
+    codes:
+      301:
+        global: 1301
+        name: OVERCURRENT
+        descriptions:
+          en: "Motor overcurrent"
+          eng: "Duplicate-ish typo locale"
+)");
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+
+  EXPECT_TRUE(has_warning_containing(result.warnings, "node 'motor_driver_node' code 301"));
+  EXPECT_TRUE(has_warning_containing(result.warnings, "locale 'eng'"));
+}
+
+// No 'languages:' declared → nothing to cross-check against, so no false positives.
+TEST(MachineCatalog, NoLanguagesDeclaredSkipsLocaleCrossCheck)
+{
+  TempYaml yaml(R"(
+reserved:
+  door_fault:
+    global: 1
+    xx: "Some locale not in any declared list"
+)");
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_FALSE(has_warning_containing(result.warnings, "not in the configured"));
 }

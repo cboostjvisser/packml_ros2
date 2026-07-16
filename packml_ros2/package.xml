@@ -15,7 +15,11 @@
 
   <exec_depend>packml_msgs</exec_depend>
   <exec_depend>packml_plugin</exec_depend>
-  <exec_depend>packml_ros</exec_depend>
+  <!-- <depend>, not <exec_depend>: this package's CMakeLists.txt calls
+       packml_ros_aggregate_error_catalog() at build time (not just runtime),
+       which needs packml_ros already built+installed for both the exported
+       CMake function and the package://packml_ros/... catalog it resolves. -->
+  <depend>packml_ros</depend>
   <exec_depend>packml_plc</exec_depend>
 
   <export>

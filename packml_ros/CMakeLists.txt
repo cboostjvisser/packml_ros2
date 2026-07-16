@@ -161,6 +161,8 @@ if(BUILD_TESTING)
 
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_gmock REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(${PROJECT_NAME}_aggregate_error_catalog_tests test/test_aggregate_error_catalog.py)
 
   # Main test executable with all packml_ros tests
   ament_add_gtest(${PROJECT_NAME}_tests
@@ -200,6 +202,28 @@ install(
     cmake/packml_ros_generate_error_codes.cmake
     cmake/generate_error_codes_header.py
   DESTINATION share/${PROJECT_NAME}/cmake
+)
+
+# Demo error catalog: must be installed (not just present in the source tree)
+# because aggregate_error_catalog.py resolves package://packml_ros/... URIs via
+# the ament package index, which only sees installed files. packml_ros2's
+# error_map.yaml references this one at build time.
+install(FILES examples/config/error_catalog.yaml DESTINATION share/${PROJECT_NAME}/config)
+
+# Offline error-catalog aggregation: the exported CMake function + its script,
+# for downstream bringup packages (see packml_ros_aggregate_error_catalog.cmake).
+install(
+  FILES
+    cmake/packml_ros_aggregate_error_catalog.cmake
+    scripts/aggregate_error_catalog.py
+  DESTINATION share/${PROJECT_NAME}/cmake
+)
+# Also installed as a `ros2 run packml_ros aggregate_error_catalog` executable,
+# for previewing the sheet / debugging lint failures directly.
+install(
+  PROGRAMS scripts/aggregate_error_catalog.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME aggregate_error_catalog
 )
 
 #Substituting the catkin_package () components:
