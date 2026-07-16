@@ -601,3 +601,132 @@ reserved:
   ASSERT_TRUE(result.ok) << result.error;
   EXPECT_FALSE(has_warning_containing(result.warnings, "not in the configured"));
 }
+
+// ---------------------------------------------------------------------------
+// Category taxonomy, schema version, locale-tag normalization
+// ---------------------------------------------------------------------------
+
+// A typo'd/unrecognized category (including a case variant of a real one, the
+// exact fragmentation this vocabulary exists to catch) must at least warn —
+// mirrors UnrecognizedActionWarns.
+TEST(MachineCatalog, UnrecognizedCategoryWarns)
+{
+  TempYaml yaml(R"(
+reserved:
+  door_fault:
+    global: 1
+    category: Electrical
+    en: "Door fault"
+nodes:
+  motor_driver_node:
+    codes:
+      301:
+        global: 1301
+        name: OVERCURRENT
+        category: elec
+        descriptions:
+          en: "Motor overcurrent"
+)");
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+
+  EXPECT_TRUE(has_warning_containing(result.warnings, "reserved 'door_fault'"));
+  EXPECT_TRUE(has_warning_containing(result.warnings, "category 'Electrical'"));
+  EXPECT_TRUE(has_warning_containing(result.warnings, "node 'motor_driver_node' code 301"));
+  EXPECT_TRUE(has_warning_containing(result.warnings, "category 'elec'"));
+
+  // Still loads, category kept as-authored (fail-open — this is documentation
+  // only, it never drives machine behavior).
+  const auto * node_entry = result.catalog.find("motor_driver_node", 301);
+  ASSERT_NE(node_entry, nullptr);
+  EXPECT_EQ(node_entry->entry.category, "elec");
+}
+
+TEST(MachineCatalog, KnownCategoryDoesNotWarn)
+{
+  TempYaml yaml(kMachineYaml);  // uses category: electrical throughout
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_FALSE(has_warning_containing(result.warnings, "outside the known category"));
+}
+
+// A schema_version matching this build's compiled-in value is silent.
+TEST(MachineCatalog, MatchingSchemaVersionDoesNotWarn)
+{
+  TempYaml yaml("schema_version: 1\n" + std::string(kMachineYaml).substr(1));
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_FALSE(has_warning_containing(result.warnings, "schema_version"));
+}
+
+// A file with no schema_version at all (e.g. hand-written before the field
+// existed) has nothing to compare — must not manufacture a false warning.
+TEST(MachineCatalog, MissingSchemaVersionDoesNotWarn)
+{
+  TempYaml yaml(kMachineYaml);  // kMachineYaml carries no schema_version key
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_FALSE(has_warning_containing(result.warnings, "schema_version"));
+}
+
+// A mismatched schema_version warns but still loads fail-open — a version
+// skew doesn't necessarily mean the fields that matter are actually unreadable.
+TEST(MachineCatalog, MismatchedSchemaVersionWarnsButStillLoads)
+{
+  TempYaml yaml("schema_version: 999\n" + std::string(kMachineYaml).substr(1));
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_TRUE(has_warning_containing(result.warnings, "schema_version 999"));
+  EXPECT_NE(result.catalog.find("motor_driver_node", 301), nullptr);
+}
+
+// description()/instance_label() match a requested locale that differs from a
+// stored one only by case or BCP-47 region subtag, instead of silently
+// falling through to the next fallback tier.
+TEST(MachineCatalog, DescriptionLocaleMatchIsCaseAndRegionInsensitive)
+{
+  TempYaml yaml(kMachineYaml);  // descriptions keyed "en"/"nl"
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+
+  const auto * e = result.catalog.find("motor_driver_node", 301);
+  ASSERT_NE(e, nullptr);
+  EXPECT_EQ(e->entry.description("EN"), "Motor overcurrent detected");
+  EXPECT_EQ(e->entry.description("en-US"), "Motor overcurrent detected");
+  EXPECT_EQ(e->entry.description("NL"), "Motor overstroom gedetecteerd");
+}
+
+TEST(MachineCatalog, InstanceLabelMatchIsCaseAndRegionInsensitive)
+{
+  TempYaml yaml(kMachineYaml);  // instance labels keyed "en"/"nl"
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+
+  EXPECT_EQ(result.catalog.instance_label("cell_north", "EN"), "North Cell");
+  EXPECT_EQ(result.catalog.instance_label("cell_north", "nl-BE"), "Noord Cel");
+}
+
+// A stored description locale that itself carries a region subtag ("en-US")
+// still satisfies a plain "languages: [en]" cross-check and a plain "en"
+// lookup — the normalization applies symmetrically to authored keys too.
+TEST(MachineCatalog, StoredRegionTaggedLocaleSatisfiesPlainLanguageLookup)
+{
+  TempYaml yaml(R"(
+languages: [en]
+nodes:
+  motor_driver_node:
+    codes:
+      301:
+        global: 1301
+        name: OVERCURRENT
+        descriptions:
+          en-US: "Motor overcurrent detected"
+)");
+  auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_FALSE(has_warning_containing(result.warnings, "not in the configured"));
+
+  const auto * e = result.catalog.find("motor_driver_node", 301);
+  ASSERT_NE(e, nullptr);
+  EXPECT_EQ(e->entry.description("en"), "Motor overcurrent detected");
+}

@@ -63,6 +63,7 @@ ACTION_KEY = 'action'
 SEVERITY_KEY = 'severity'
 CATEGORY_KEY = 'category'
 INSTANCED_KEY = 'instanced'
+SCHEMA_VERSION_KEY = 'schema_version'
 
 # C++ constant name -> value, in generation order, for generate_schema_keys_header().
 _SCHEMA_KEY_CONSTANTS = {
@@ -80,7 +81,16 @@ _SCHEMA_KEY_CONSTANTS = {
     'kSeverityKey': SEVERITY_KEY,
     'kCategoryKey': CATEGORY_KEY,
     'kInstancedKey': INSTANCED_KEY,
+    'kSchemaVersionKey': SCHEMA_VERSION_KEY,
 }
+
+# The version of machine_error_catalog.yaml's top-level shape this tool writes
+# and error_catalog.cpp's loader expects (independent of TOOL_VERSION in
+# aggregate_error_catalog.py, which tracks the script's own release history and
+# can change — e.g. a lint-rule fix — without the file format changing at
+# all). Bump this only when a top-level key is added/removed/repurposed in a
+# way that changes how the loader must read the file.
+SCHEMA_VERSION = 1
 
 
 def _parse_catalog_yaml(yaml_file):
@@ -184,16 +194,21 @@ def generate_schema_keys_header(output_file):
 
     This is the single source for the section/field names both this script
     and the C++ loader (error_catalog.cpp) read, so the two YAML readers
-    can't independently drift on the same format.
+    can't independently drift on the same format. Also carries kSchemaVersion,
+    the compiled-in counterpart of SCHEMA_VERSION above, so the loader can
+    warn on a machine_error_catalog.yaml written by a tool version that
+    disagrees with it on the file's top-level shape.
     """
     os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
 
     with open(output_file, 'w') as f:
         f.write('// Auto-generated from generate_error_codes_header.py -- do not edit manually\n')
         f.write('#pragma once\n\n')
+        f.write('#include <cstdint>\n\n')
         f.write('namespace packml_ros\n{\nnamespace schema\n{\n\n')
         for cpp_name, value in _SCHEMA_KEY_CONSTANTS.items():
             f.write(f'constexpr const char * {cpp_name} = "{value}";\n')
+        f.write(f'constexpr int32_t kSchemaVersion = {SCHEMA_VERSION};\n')
         f.write('\n}  // namespace schema\n}  // namespace packml_ros\n')
 
 

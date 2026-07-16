@@ -47,7 +47,8 @@ struct ErrorEntry
   std::map<std::string, std::string> descriptions;  ///< locale tag → text
   // Appended after descriptions so existing positional ErrorEntry{…} initializers
   // (which end at descriptions) keep compiling.
-  std::string category;    ///< free-form (electrical, mechanical, …); documentation only
+  std::string category;    ///< controlled vocabulary (electrical, mechanical, …);
+                           ///< documentation only, doesn't drive machine behavior
   bool instanced{false};   ///< true → descriptions carry a {instance} placeholder
 
   /// Resolve the description for a locale, with fallback:
@@ -160,6 +161,7 @@ struct MachineCatalogLoadResult
 /// Load a MachineCatalog from the generated machine_error_catalog.yaml.
 ///
 /// Expected structure:
+///   schema_version: 1
 ///   languages: [en, nl]
 ///   reserved:
 ///     heartbeat_timeout: { global: 1, severity: CRITICAL, action: ABORT, en: "..." }

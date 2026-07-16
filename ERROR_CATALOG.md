@@ -26,7 +26,10 @@ in your node's package:
       OVERCURRENT:
         action: ABORT            # NONE | WARN | HOLD | SUSPEND | ABORT
         severity: CRITICAL       # CRITICAL | ERROR | WARNING | INFO
-        category: electrical     # free-form, documentation only
+        category: electrical     # electrical | mechanical | thermal | sensor |
+                                  # pneumatic | hydraulic | software |
+                                  # communication | safety | process |
+                                  # calibration | power | other
         en: "Motor overcurrent detected"
         nl: "Motor overstroom gedetecteerd"
       OVER_TEMPERATURE:

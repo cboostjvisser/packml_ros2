@@ -99,11 +99,20 @@ WINDOW_KEY = 'window'
 REMAP_KEY = 'remap'
 OVERRIDES_KEY = 'overrides'
 DEFAULT_WINDOW = 1000
-RESERVED_BAND = range(1, 100)  # conventional 1-99 reserved band (W7)
+RESERVED_BAND = range(1, 100)  # conventional 1-99 reserved band ('reserved-outside-band', W7)
 INT32_MAX = 2 ** 31 - 1
 KNOWN_SEVERITIES = ('CRITICAL', 'ERROR', 'WARNING', 'INFO')
 KNOWN_ACTIONS = ('NONE', 'WARN', 'HOLD', 'SUSPEND', 'ABORT')
-MAX_DESCRIPTION_CHARS = 80  # W2: PackTags Message field limit
+# Lowercase, matching every existing catalog's own convention for this field
+# (unlike severity/action, which are conventionally upper-case). Without a
+# controlled vocabulary, "electrical"/"Electrical"/"elec" are three different,
+# un-aggregatable strings to any cross-machine category rollup — this list
+# only catches that fragmentation; it does not (yet) drive any behavior.
+KNOWN_CATEGORIES = (
+    'electrical', 'mechanical', 'thermal', 'sensor', 'pneumatic', 'hydraulic',
+    'software', 'communication', 'safety', 'process', 'calibration', 'power', 'other',
+)
+MAX_DESCRIPTION_CHARS = 80  # 'description-too-long' (W2): PackTags Message field limit
 
 # Must match packml_ros::kManagerNodeName (error_catalog.hpp) — the sentinel
 # "owning node" label for manager-synthesized reserved faults in the flattened
@@ -236,9 +245,9 @@ def parse_node_catalog(path):
     mirroring the semantics of the deleted C++ load_node_catalog_from_yaml:
     code 0 rejected, duplicate local value warns (last wins), codes without a
     description are excluded, orphan descriptions warn, negative locals
-    rejected (E2 covers >= window separately; this rejects < 1 outright, same
-    as the as-built loader's reserved-0 rule extended to all non-positive
-    values).
+    rejected ('local-code-out-of-range' (E2) covers >= window separately; this
+    rejects < 1 outright, same as the as-built loader's reserved-0 rule
+    extended to all non-positive values).
     """
     issues = []
     data = load_yaml_file(path)
@@ -303,12 +312,14 @@ def parse_node_catalog(path):
             has_placeholder = _INSTANCE_PLACEHOLDER in text
             if entry['instanced'] and not has_placeholder:
                 issues.append(LintIssue(
-                    'E5', f"'{path}': instanced error code '{name}' description [{locale}] "
-                    f'has no "{_INSTANCE_PLACEHOLDER}" placeholder'))
+                    'instance-placeholder-mismatch',
+                    f"'{path}': instanced error code '{name}' description [{locale}] "
+                    f'has no "{_INSTANCE_PLACEHOLDER}" placeholder (E5)'))
             elif not entry['instanced'] and has_placeholder:
                 issues.append(LintIssue(
-                    'E5', f"'{path}': non-instanced error code '{name}' description "
-                    f'[{locale}] contains a "{_INSTANCE_PLACEHOLDER}" placeholder'))
+                    'instance-placeholder-mismatch',
+                    f"'{path}': non-instanced error code '{name}' description "
+                    f'[{locale}] contains a "{_INSTANCE_PLACEHOLDER}" placeholder (E5)'))
 
         entries[entry['code']] = entry
 
@@ -373,8 +384,9 @@ def aggregate(map_path, check_instances=None):
         for inst_id in check_instances:
             if inst_id not in catalog.instances:
                 issues.append(LintIssue(
-                    'W4', f"instance id '{inst_id}' (from --check-instances) has no label "
-                    "in 'instances:'"))
+                    'instance-missing-label',
+                    f"instance id '{inst_id}' (from --check-instances) has no label "
+                    "in 'instances:' (W4)"))
 
     # --- reserved: name -> {global, action, severity, category, locales...} ---
     reserved_globals = {}
@@ -422,31 +434,36 @@ def aggregate(map_path, check_instances=None):
 
         if global_num in reserved_globals:
             issues.append(LintIssue(
-                'E4', f"duplicate global fault number {global_num} (reserved '{name}' vs "
-                f"'{reserved_globals[global_num]}')"))
+                'duplicate-global',
+                f"duplicate global fault number {global_num} (reserved '{name}' vs "
+                f"'{reserved_globals[global_num]}') (E4)"))
         reserved_globals[global_num] = name
         if global_num not in RESERVED_BAND:
             issues.append(LintIssue(
-                'W7', f"reserved '{name}' has global {global_num} outside the "
-                f'conventional 1-99 reserved band'))
+                'reserved-outside-band', f"reserved '{name}' has global {global_num} outside "
+                f'the conventional 1-99 reserved band (W7)'))
         if not (0 < global_num <= INT32_MAX):
             issues.append(LintIssue(
-                'E6', f"reserved '{name}' global {global_num} is outside [1, {INT32_MAX}]"))
+                'value-out-of-range',
+                f"reserved '{name}' global {global_num} is outside [1, {INT32_MAX}] (E6)"))
         catalog.reserved[name] = entry
         _lint_entry_common(entry, f"reserved '{name}'", issues)
 
     if 'heartbeat_timeout' not in catalog.reserved:
-        issues.append(LintIssue('W8', "no 'heartbeat_timeout' reserved entry defined"))
+        issues.append(LintIssue(
+            'no-heartbeat-timeout', "no 'heartbeat_timeout' reserved entry defined (W8)"))
 
     # --- nodes: node_name -> {catalog, base, window, remap, overrides} ---
-    all_globals = dict(reserved_globals)  # global -> owner label, for E3/E4 cross-checks
-    node_windows = []  # (node_name, base, base+window) for E1
+    # global -> owner label, for 'duplicate-global'/'remap-collision' cross-checks (E3/E4)
+    all_globals = dict(reserved_globals)
+    node_windows = []  # (node_name, base, base+window), for 'window-overlap' (E1)
 
     for node_name, node_spec in (root.get(_schema.NODES_KEY, {}) or {}).items():
         if '/' in node_name:
             issues.append(LintIssue(
-                'W9', f"node key '{node_name}' contains '/' (a ROS namespace) — node "
-                'identity must be flat, see error_map.yaml "Node identity"'))
+                'node-key-has-slash',
+                f"node key '{node_name}' contains '/' (a ROS namespace) — node "
+                'identity must be flat, see error_map.yaml "Node identity" (W9)'))
         node_spec = node_spec or {}
         try:
             base = int(_require_scalar(node_spec.get(BASE_KEY, 0), f'nodes.{node_name}.base'))
@@ -465,43 +482,51 @@ def aggregate(map_path, check_instances=None):
 
         # A non-positive window can never contain an assignable local code (by
         # base+local or by an own-window remap) — flag it at the source instead
-        # of letting it manifest as a spray of misleading E1/E2 messages below.
+        # of letting it manifest as a spray of misleading 'window-overlap'/
+        # 'local-code-out-of-range' messages below (E1/E2).
         window_usable = window > 0
         if not window_usable:
             issues.append(LintIssue(
-                'E6', f"node '{node_name}' has a non-positive window ({window}) — no code "
-                'could ever be assigned to it'))
-        # E2's bounds apply to remap keys too: same positivity rule as an
-        # ordinary local code (remap keys are exempt from the upper "< window"
-        # bound by design — that's what lets a wild vendor code escape it).
+                'value-out-of-range',
+                f"node '{node_name}' has a non-positive window ({window}) — no code "
+                'could ever be assigned to it (E6)'))
+        # 'local-code-out-of-range' (E2)'s bounds apply to remap keys too: same
+        # positivity rule as an ordinary local code (remap keys are exempt from
+        # the upper "< window" bound by design — that's what lets a wild vendor
+        # code escape it).
         for remap_local in remap:
             if remap_local <= 0:
                 issues.append(LintIssue(
-                    'E2', f"node '{node_name}' remap key {remap_local} is non-positive — "
-                    'the same positivity bound as an ordinary local code applies'))
+                    'local-code-out-of-range',
+                    f"node '{node_name}' remap key {remap_local} is non-positive — "
+                    'the same positivity bound as an ordinary local code applies (E2)'))
 
         if base + window - 1 > INT32_MAX or base < 0:
             issues.append(LintIssue(
-                'E6', f"node '{node_name}' window [{base}, {base + window}) exceeds "
-                f'[1, {INT32_MAX}]'))
+                'value-out-of-range',
+                f"node '{node_name}' window [{base}, {base + window}) exceeds "
+                f'[1, {INT32_MAX}] (E6)'))
 
         if window_usable:
             for other_name, other_lo, other_hi in node_windows:
                 if other_hi > other_lo and base < other_hi and other_lo < base + window:
                     issues.append(LintIssue(
-                        'E1', f"node '{node_name}' window [{base}, {base + window}) overlaps "
-                        f"node '{other_name}' window [{other_lo}, {other_hi})"))
+                        'window-overlap',
+                        f"node '{node_name}' window [{base}, {base + window}) overlaps "
+                        f"node '{other_name}' window [{other_lo}, {other_hi}) (E1)"))
             for reserved_g in reserved_globals:
                 if base <= reserved_g < base + window:
                     issues.append(LintIssue(
-                        'E1', f"node '{node_name}' window [{base}, {base + window}) overlaps "
-                        f'reserved value {reserved_g}'))
+                        'window-overlap',
+                        f"node '{node_name}' window [{base}, {base + window}) overlaps "
+                        f'reserved value {reserved_g} (E1)'))
             if base < 100:
                 # Overlaps the conventional reserved band even if no reserved
                 # value happens to be assigned there yet.
                 issues.append(LintIssue(
-                    'E1', f"node '{node_name}' window [{base}, {base + window}) overlaps "
-                    'the conventional 1-99 reserved band'))
+                    'window-overlap',
+                    f"node '{node_name}' window [{base}, {base + window}) overlaps "
+                    'the conventional 1-99 reserved band (E1)'))
         node_windows.append((node_name, base, base + window))
 
         if CATALOG_KEY not in node_spec:
@@ -536,7 +561,8 @@ def aggregate(map_path, check_instances=None):
             catalog.provenance_sources.append((catalog_path, _sha256_file(catalog_path)))
 
         if not node_entries:
-            issues.append(LintIssue('W3', f"node '{node_name}' catalog has zero usable codes"))
+            issues.append(LintIssue(
+                'catalog-empty', f"node '{node_name}' catalog has zero usable codes (W3)"))
 
         codes_out = {}
         for local, entry in node_entries.items():
@@ -546,36 +572,42 @@ def aggregate(map_path, check_instances=None):
                 global_num = base + local
             else:
                 issues.append(LintIssue(
-                    'E2', f"node '{node_name}' local code {local} is outside its window "
-                    f'[1, {window}) and has no remap entry — widen the window or add a remap'))
+                    'local-code-out-of-range',
+                    f"node '{node_name}' local code {local} is outside its window "
+                    f'[1, {window}) and has no remap entry — widen the window or add a '
+                    'remap (E2)'))
                 continue
 
             if global_num in all_globals:
                 issues.append(LintIssue(
-                    'E4', f'duplicate global fault number {global_num} (node '
-                    f"'{node_name}' code {local} vs '{all_globals[global_num]}')"))
+                    'duplicate-global', f'duplicate global fault number {global_num} (node '
+                    f"'{node_name}' code {local} vs '{all_globals[global_num]}') (E4)"))
             all_globals[global_num] = f'{node_name}:{local}'
 
             if local in remap:
-                # E3: a remap target must land in the node's OWN window (permitted —
-                # that's the intended use, e.g. renumbering a wild vendor code into your
-                # own subsystem block) or must not collide with another node's window /
-                # a reserved value. Collision with another resulting global is E4, above.
+                # 'remap-collision' (E3): a remap target must land in the node's OWN
+                # window (permitted — that's the intended use, e.g. renumbering a wild
+                # vendor code into your own subsystem block) or must not collide with
+                # another node's window / a reserved value. Collision with another
+                # resulting global is 'duplicate-global' (E4), above.
                 in_own_window = window_usable and base <= global_num < base + window
                 if not in_own_window:
                     for other_name, other_lo, other_hi in node_windows[:-1]:
                         if other_lo <= global_num < other_hi:
                             issues.append(LintIssue(
-                                'E3', f"node '{node_name}' remap {local} -> {global_num} "
-                                f"lands inside node '{other_name}'’s window"))
+                                'remap-collision',
+                                f"node '{node_name}' remap {local} -> {global_num} "
+                                f"lands inside node '{other_name}'’s window (E3)"))
                     if global_num in reserved_globals:
                         issues.append(LintIssue(
-                            'E3', f"node '{node_name}' remap {local} -> {global_num} "
-                            'collides with a reserved value'))
+                            'remap-collision',
+                            f"node '{node_name}' remap {local} -> {global_num} "
+                            'collides with a reserved value (E3)'))
                 if not (0 < global_num <= INT32_MAX):
                     issues.append(LintIssue(
-                        'E6', f"node '{node_name}' remap {local} -> {global_num} is "
-                        f'outside [1, {INT32_MAX}]'))
+                        'value-out-of-range',
+                        f"node '{node_name}' remap {local} -> {global_num} is "
+                        f'outside [1, {INT32_MAX}] (E6)'))
 
             merged = dict(entry)
             merged['global'] = global_num
@@ -643,42 +675,83 @@ def aggregate(map_path, check_instances=None):
 def _lint_entry_common(entry, label, issues):
     """Lint rules independent of the final languages list.
 
-    W2 (description length) and the action/severity vocabulary checks
-    (unrecognized-action, W6).
+    'description-too-long' (W2) and the action/severity/category vocabulary
+    checks ('unrecognized-action', 'unrecognized-category', 'unrecognized-
+    severity' (W6)).
     """
     if entry.get('severity') and entry['severity'] not in KNOWN_SEVERITIES:
         issues.append(LintIssue(
-            'W6', f"{label} has severity '{entry['severity']}' outside "
-            f'{KNOWN_SEVERITIES}'))
+            'unrecognized-severity', f"{label} has severity '{entry['severity']}' outside "
+            f'{KNOWN_SEVERITIES} (W6)'))
     if entry.get('action') and entry['action'] not in KNOWN_ACTIONS:
         issues.append(LintIssue(
             'unrecognized-action', f"{label} has action '{entry['action']}' outside "
             f'{KNOWN_ACTIONS}'))
+    if entry.get('category') and entry['category'] not in KNOWN_CATEGORIES:
+        issues.append(LintIssue(
+            'unrecognized-category', f"{label} has category '{entry['category']}' outside "
+            f'{KNOWN_CATEGORIES}'))
     for locale, text in entry.get('descriptions', {}).items():
         if len(text) > MAX_DESCRIPTION_CHARS:
             issues.append(LintIssue(
-                'W2', f'{label} description [{locale}] is {len(text)} chars, over the '
-                f'{MAX_DESCRIPTION_CHARS}-char PackTags Message limit'))
+                'description-too-long',
+                f'{label} description [{locale}] is {len(text)} chars, over the '
+                f'{MAX_DESCRIPTION_CHARS}-char PackTags Message limit (W2)'))
+
+
+def _locale_primary_subtag(tag):
+    """Lowercased primary subtag of a BCP-47-ish locale tag: "en-US"/"EN" -> "en".
+
+    Used everywhere this tool compares locale tags (here, and the C++ loader's
+    identical helper for the aggregated catalog it reads at runtime) so a
+    declared/authored locale differing only in case or region doesn't count
+    as a different, "unconfigured" locale from its own base language.
+    """
+    return tag.split('-', 1)[0].lower()
+
+
+def _has_locale(descriptions, locale):
+    """Return True if `descriptions` has `locale`, exactly or by primary subtag."""
+    if locale in descriptions:
+        return True
+    wanted = _locale_primary_subtag(locale)
+    return any(_locale_primary_subtag(key) == wanted for key in descriptions)
+
+
+def _locale_configured(languages, locale):
+    """Return True if `locale` matches a declared language, exactly or by primary subtag.
+
+    An empty `languages` means nothing is declared to check against, so every
+    locale passes.
+    """
+    if not languages:
+        return True
+    if locale in languages:
+        return True
+    wanted = _locale_primary_subtag(locale)
+    return any(_locale_primary_subtag(lang) == wanted for lang in languages)
 
 
 def _lint_entry_languages(entry, label, catalog, issues):
     """Lint rules depending on the final (possibly auto-computed) languages list.
 
-    W5 (a declared language missing from this entry) and its mirror — a
-    description key that ISN'T a configured language, almost always a
-    typo'd field name (e.g. 'sevrity' for 'severity') rather than a real,
-    unconfigured locale. Mirrors error_catalog.cpp's identical cross-check
-    for the already-aggregated catalog (see its v2 delta) — this is the
-    Python-side half for the actual vendor-authored YAML this tool parses.
+    'description-missing-locale' (W5, a declared language missing from this
+    entry) and its mirror — a description key that ISN'T a configured
+    language, almost always a typo'd field name (e.g. 'sevrity' for
+    'severity') rather than a real, unconfigured locale. Mirrors
+    error_catalog.cpp's identical cross-check for the already-aggregated
+    catalog — this is the Python-side half for the actual vendor-authored
+    YAML this tool parses.
     """
     descriptions = entry.get('descriptions', {})
     for lang in catalog.languages:
-        if lang not in descriptions:
+        if not _has_locale(descriptions, lang):
             issues.append(LintIssue(
-                'W5', f"{label} has no '{lang}' description (declared in 'languages:')"))
+                'description-missing-locale',
+                f"{label} has no '{lang}' description (declared in 'languages:') (W5)"))
     if catalog.languages:
         for locale in descriptions:
-            if locale not in catalog.languages:
+            if not _locale_configured(catalog.languages, locale):
                 issues.append(LintIssue(
                     'unconfigured-locale',
                     f"{label} has description key '{locale}' which is not in the "
@@ -697,7 +770,10 @@ def apply_strict(issues, strict):
     build` report success while shipping an incomplete/corrupt runtime
     catalog.
     """
-    error_codes = {'E1', 'E2', 'E3', 'E4', 'E5', 'E6'}
+    error_codes = {
+        'window-overlap', 'local-code-out-of-range', 'remap-collision', 'duplicate-global',
+        'instance-placeholder-mismatch', 'value-out-of-range',
+    }
     always_fatal = {'catalog-not-found', 'catalog-parse-error', 'no-catalog', 'node-malformed'}
     errors = [i for i in issues if i.code in error_codes or i.code in always_fatal]
     warnings = [i for i in issues if i.code not in error_codes and i.code not in always_fatal]
@@ -730,6 +806,7 @@ def write_machine_yaml(catalog, provenance, output_path):
     independently drift).
     """
     doc = {}
+    doc[_schema.SCHEMA_VERSION_KEY] = _schema.SCHEMA_VERSION
     doc[_schema.LANGUAGES_KEY] = list(catalog.languages)
     doc[_schema.RESERVED_KEY] = {
         name: _entry_to_yaml(entry, skip_name=True)
@@ -750,6 +827,7 @@ def write_machine_yaml(catalog, provenance, output_path):
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, 'w') as f:
         f.write('# Auto-generated by aggregate_error_catalog.py -- do not edit manually\n')
+        f.write(f'# schema_version: {_schema.SCHEMA_VERSION}\n')
         f.write(f"# tool_version: {provenance['tool_version']}\n")
         f.write(f"# generated_at: {provenance['generated_at']}\n")
         f.write(f"# error_map: {provenance['error_map']}\n")
@@ -992,7 +1070,8 @@ def main(argv=None):
     formats_help = f'Comma-separated output formats (default: {default_formats_str})'
     parser.add_argument('--formats', default=default_formats_str, help=formats_help)
     parser.add_argument('--strict', action='store_true', help='Promote warnings to errors')
-    check_instances_help = 'Comma-separated instance ids that must have a label (W4)'
+    check_instances_help = (
+        "Comma-separated instance ids that must have a label ('instance-missing-label', W4)")
     parser.add_argument('--check-instances', default='', help=check_instances_help)
     list_inputs_help = 'Print dependency file paths (map + node catalogs) and exit'
     parser.add_argument('--list-inputs', action='store_true', help=list_inputs_help)

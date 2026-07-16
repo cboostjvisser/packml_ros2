@@ -14,7 +14,10 @@
 
 #include "packml_ros/error_catalog.hpp"
 
+#include <cctype>
+
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <system_error>
 
@@ -56,6 +59,55 @@ bool has_instance_placeholder(const ErrorEntry & entry)
   }
   return false;
 }
+
+/// Lowercased primary subtag of a BCP-47-ish locale tag ("en-US" -> "en",
+/// "EN" -> "en") — locale keys are matched by this, not raw equality, so a
+/// requested/declared locale differing only in case or region doesn't
+/// silently fall through to the next fallback tier.
+std::string primary_subtag(const std::string & tag)
+{
+  std::string primary = tag.substr(0, tag.find('-'));
+  std::transform(
+    primary.begin(), primary.end(), primary.begin(),
+    [](unsigned char c) {return std::tolower(c);});
+  return primary;
+}
+
+/// Find the value keyed by `locale` in a locale->text map: exact match first,
+/// then a case-insensitive primary-subtag match (so "en-US"/"EN" find a
+/// stored "en", and a stored "en-US"/"EN" is found by a request for "en").
+const std::string * find_locale(
+  const std::map<std::string, std::string> & by_locale, const std::string & locale)
+{
+  if (const auto it = by_locale.find(locale); it != by_locale.end()) {
+    return &it->second;
+  }
+  const std::string wanted = primary_subtag(locale);
+  for (const auto & [key, value] : by_locale) {
+    if (primary_subtag(key) == wanted) {
+      return &value;
+    }
+  }
+  return nullptr;
+}
+
+/// True if `locale` matches (exactly, or by primary subtag) an entry in
+/// `languages` — an empty `languages` means "nothing declared to check
+/// against", so every locale passes.
+bool locale_is_configured(
+  const std::vector<std::string> & languages, const std::string & locale)
+{
+  if (languages.empty()) {
+    return true;
+  }
+  if (std::find(languages.begin(), languages.end(), locale) != languages.end()) {
+    return true;
+  }
+  const std::string wanted = primary_subtag(locale);
+  return std::any_of(
+    languages.begin(), languages.end(),
+    [&](const std::string & lang) {return primary_subtag(lang) == wanted;});
+}
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -64,11 +116,11 @@ bool has_instance_placeholder(const ErrorEntry & entry)
 
 std::string ErrorEntry::description(const std::string & locale) const
 {
-  if (const auto it = descriptions.find(locale); it != descriptions.end()) {
-    return it->second;
+  if (const auto * text = find_locale(descriptions, locale)) {
+    return *text;
   }
-  if (const auto it = descriptions.find("en"); it != descriptions.end()) {
-    return it->second;
+  if (const auto * text = find_locale(descriptions, "en")) {
+    return *text;
   }
   if (!descriptions.empty()) {
     return descriptions.begin()->second;
@@ -99,6 +151,22 @@ bool is_known_action_name(const std::string & name)
 {
   return name == "NONE" || name == "WARN" || name == "HOLD" ||
          name == "SUSPEND" || name == "ABORT";
+}
+
+/// Mirrors aggregate_error_catalog.py's KNOWN_CATEGORIES — kept in sync by
+/// hand (like is_known_action_name/KNOWN_ACTIONS above; this is a controlled
+/// vocabulary of field *values*, not a YAML key name, so it isn't part of the
+/// generated schema-key header). Without this, "electrical"/"Electrical"/
+/// "elec" are three different, un-aggregatable strings to any cross-machine
+/// category rollup — this only catches that fragmentation at load time too,
+/// as defense in depth alongside the aggregation tool's own build-time lint.
+bool is_known_category_name(const std::string & name)
+{
+  static const std::array<const char *, 13> kKnown = {
+    "electrical", "mechanical", "thermal", "sensor", "pneumatic", "hydraulic",
+    "software", "communication", "safety", "process", "calibration", "power", "other",
+  };
+  return std::find(kKnown.begin(), kKnown.end(), name) != kKnown.end();
 }
 }  // namespace
 
@@ -191,11 +259,11 @@ std::string MachineCatalog::instance_label(
     return instance_id;  // unknown id → the raw token
   }
   const auto & by_locale = it->second;
-  if (const auto j = by_locale.find(locale); j != by_locale.end()) {
-    return j->second;
+  if (const auto * text = find_locale(by_locale, locale)) {
+    return *text;
   }
-  if (const auto j = by_locale.find("en"); j != by_locale.end()) {
-    return j->second;
+  if (const auto * text = find_locale(by_locale, "en")) {
+    return *text;
   }
   if (!by_locale.empty()) {
     return by_locale.begin()->second;
@@ -287,6 +355,24 @@ MachineCatalogLoadResult load_machine_catalog_from_yaml(const std::string & path
   std::size_t entries_added = 0;
 
   try {
+    // --- schema_version: warn (never fail) on a mismatch against the version
+    // this loader was compiled to understand. A missing key means a file
+    // written before schema_version existed — nothing to compare, so no
+    // warning. A mismatch doesn't necessarily mean anything is actually
+    // unreadable (most fields are unlikely to change shape release to
+    // release), but it's worth a visible note before assuming a silently
+    // misread field is this loader's bug rather than a version skew.
+    if (const auto & sv = root[schema::kSchemaVersionKey]) {
+      const auto file_version = sv.as<int32_t>();
+      if (file_version != schema::kSchemaVersion) {
+        result.warnings.push_back(
+          "machine error catalog '" + path + "' has schema_version " +
+          std::to_string(file_version) + ", this build understands " +
+          std::to_string(schema::kSchemaVersion) +
+          " — fields may be misread if the format has since changed");
+      }
+    }
+
     // --- languages ---
     std::vector<std::string> languages;
     if (root[schema::kLanguagesKey]) {
@@ -340,15 +426,20 @@ MachineCatalogLoadResult load_machine_catalog_from_yaml(const std::string & path
             me.entry.severity = field.second.as<std::string>();
           } else if (key == schema::kCategoryKey) {
             me.entry.category = field.second.as<std::string>();
+            if (!is_known_category_name(me.entry.category)) {
+              result.warnings.push_back(
+                "reserved '" + name + "' has category '" + me.entry.category +
+                "' outside the known category vocabulary");
+            }
           } else {
             // Anything else is treated as a locale → description text. If the
-            // file declares a 'languages:' list, a key outside it is very
-            // likely a misspelled field name (e.g. "sevrity") rather than a
-            // real, unconfigured locale — warn instead of silently absorbing
-            // it as a locale with a blank severity/action/category left behind.
-            if (!languages.empty() &&
-              std::find(languages.begin(), languages.end(), key) == languages.end())
-            {
+            // file declares a 'languages:' list, a key outside it (even by
+            // case or region — "EN"/"en-US" both count as configured "en") is
+            // very likely a misspelled field name (e.g. "sevrity") rather than
+            // a real, unconfigured locale — warn instead of silently
+            // absorbing it as a locale with a blank severity/action/category
+            // left behind.
+            if (!locale_is_configured(languages, key)) {
               result.warnings.push_back(
                 "reserved '" + name + "' has key '" + key +
                 "' which is not in the configured 'languages' list — treated as a "
@@ -389,7 +480,15 @@ MachineCatalogLoadResult load_machine_catalog_from_yaml(const std::string & path
           me.global = cb[schema::kGlobalKey] ? cb[schema::kGlobalKey].as<int32_t>() : 0;
           if (cb[schema::kNameKey]) {me.entry.name = cb[schema::kNameKey].as<std::string>();}
           if (cb[schema::kSeverityKey]) {me.entry.severity = cb[schema::kSeverityKey].as<std::string>();}
-          if (cb[schema::kCategoryKey]) {me.entry.category = cb[schema::kCategoryKey].as<std::string>();}
+          if (cb[schema::kCategoryKey]) {
+            me.entry.category = cb[schema::kCategoryKey].as<std::string>();
+            if (!is_known_category_name(me.entry.category)) {
+              result.warnings.push_back(
+                "node '" + node_name + "' code " + std::to_string(me.entry.code) +
+                " has category '" + me.entry.category + "' outside the known category "
+                "vocabulary");
+            }
+          }
           if (cb[schema::kActionKey]) {
             const auto action_str = cb[schema::kActionKey].as<std::string>();
             if (!is_known_action_name(action_str)) {
@@ -403,9 +502,7 @@ MachineCatalogLoadResult load_machine_catalog_from_yaml(const std::string & path
           if (cb[schema::kDescriptionsKey]) {
             for (const auto & desc : cb[schema::kDescriptionsKey]) {
               const auto locale = desc.first.as<std::string>();
-              if (!languages.empty() &&
-                std::find(languages.begin(), languages.end(), locale) == languages.end())
-              {
+              if (!locale_is_configured(languages, locale)) {
                 result.warnings.push_back(
                   "node '" + node_name + "' code " + std::to_string(me.entry.code) +
                   " has a description locale '" + locale +

@@ -264,7 +264,7 @@ descriptions:
 # Lint: errors (E1-E6)
 # ---------------------------------------------------------------------------
 
-def test_e1_window_overlap_between_nodes(workdir):
+def test_window_overlap_between_nodes(workdir):
     _minimal_node_yaml(str(workdir / 'a.yaml'), 'a')
     _minimal_node_yaml(str(workdir / 'b.yaml'), 'b')
     write(str(workdir / 'map.yaml'), f"""
@@ -279,10 +279,10 @@ nodes:
     window: 500
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'E1' in _codes(issues)
+    assert 'window-overlap' in _codes(issues)
 
 
-def test_e1_window_overlaps_reserved_band(workdir):
+def test_window_overlaps_reserved_band(workdir):
     _minimal_node_yaml(str(workdir / 'a.yaml'), 'a')
     write(str(workdir / 'map.yaml'), f"""
 nodes:
@@ -292,10 +292,10 @@ nodes:
     window: 1000
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'E1' in _codes(issues)
+    assert 'window-overlap' in _codes(issues)
 
 
-def test_e2_local_outside_window_without_remap(workdir):
+def test_local_code_outside_window_without_remap(workdir):
     write(str(workdir / 'a.yaml'), """
 node_name: a
 error_codes:
@@ -311,10 +311,10 @@ nodes:
     window: 1000
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'E2' in _codes(issues)
+    assert 'local-code-out-of-range' in _codes(issues)
 
 
-def test_e3_remap_collides_with_another_nodes_window(workdir):
+def test_remap_collides_with_another_nodes_window(workdir):
     _minimal_node_yaml(str(workdir / 'a.yaml'), 'a')
     write(str(workdir / 'b.yaml'), """
 node_name: b
@@ -336,10 +336,10 @@ nodes:
     remap: {{ 99999: 1500 }}
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'E3' in _codes(issues)
+    assert 'remap-collision' in _codes(issues)
 
 
-def test_e3_remap_into_own_window_is_permitted(workdir):
+def test_remap_into_own_window_is_permitted(workdir):
     write(str(workdir / 'b.yaml'), """
 node_name: b
 error_codes:
@@ -356,10 +356,10 @@ nodes:
     remap: {{ 99999: 5090 }}
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'E3' not in _codes(issues)
+    assert 'remap-collision' not in _codes(issues)
 
 
-def test_e4_duplicate_global_across_nodes(workdir):
+def test_duplicate_global_across_nodes(workdir):
     _minimal_node_yaml(str(workdir / 'a.yaml'), 'a')
     _minimal_node_yaml(str(workdir / 'b.yaml'), 'b')
     write(str(workdir / 'map.yaml'), f"""
@@ -374,20 +374,20 @@ nodes:
     remap: {{ 1: 9000 }}
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'E4' in _codes(issues)
+    assert 'duplicate-global' in _codes(issues)
 
 
-def test_e4_duplicate_global_reserved_vs_reserved(workdir):
+def test_duplicate_global_reserved_vs_reserved(workdir):
     write(str(workdir / 'map.yaml'), """
 reserved:
   fault_a: { global: 1, action: ABORT, en: "a" }
   fault_b: { global: 1, action: ABORT, en: "b" }
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'E4' in _codes(issues)
+    assert 'duplicate-global' in _codes(issues)
 
 
-def test_e5_instanced_mismatch_both_directions(workdir):
+def test_instance_placeholder_mismatch_both_directions(workdir):
     path = write(str(workdir / 'n.yaml'), """
 node_name: n
 error_codes:
@@ -398,34 +398,34 @@ descriptions:
   BADPLAIN: { action: WARN, en: "Something at {instance}" }
 """)
     _, issues = agg.parse_node_catalog(path)
-    e5 = [i for i in issues if i.code == 'E5']
-    assert any('DOOR' in i.message for i in e5)
-    assert any('BADPLAIN' in i.message for i in e5)
+    mismatches = [i for i in issues if i.code == 'instance-placeholder-mismatch']
+    assert any('DOOR' in i.message for i in mismatches)
+    assert any('BADPLAIN' in i.message for i in mismatches)
 
 
-def test_e6_global_out_of_int32_range(workdir):
+def test_global_out_of_int32_range(workdir):
     write(str(workdir / 'map.yaml'), """
 reserved:
   huge: { global: 5000000000, action: ABORT, en: "too big" }
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'E6' in _codes(issues)
+    assert 'value-out-of-range' in _codes(issues)
 
 
 # ---------------------------------------------------------------------------
-# Lint: warnings (W1-W9) and --strict promotion
+# Lint: warnings and --strict promotion
 # ---------------------------------------------------------------------------
 
-def test_w2_description_too_long(workdir):
+def test_description_too_long(workdir):
     write(str(workdir / 'map.yaml'), f"""
 reserved:
   fault_a: {{ global: 1, action: ABORT, en: "{'x' * 90}" }}
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'W2' in _codes(issues)
+    assert 'description-too-long' in _codes(issues)
 
 
-def test_w3_catalog_with_zero_usable_codes(workdir):
+def test_catalog_with_zero_usable_codes(workdir):
     write(str(workdir / 'empty.yaml'), 'node_name: n\nerror_codes: {}\ndescriptions: {}\n')
     write(str(workdir / 'map.yaml'), f"""
 nodes:
@@ -434,50 +434,50 @@ nodes:
     base: 1000
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'W3' in _codes(issues)
+    assert 'catalog-empty' in _codes(issues)
 
 
-def test_w4_check_instances_missing_label(workdir):
+def test_check_instances_missing_label(workdir):
     write(str(workdir / 'map.yaml'), 'languages: [en]\n')
     _, issues = agg.aggregate(str(workdir / 'map.yaml'), check_instances=['cell_north'])
-    assert 'W4' in _codes(issues)
+    assert 'instance-missing-label' in _codes(issues)
 
 
-def test_w5_declared_language_missing_from_entry(workdir):
+def test_declared_language_missing_from_entry(workdir):
     write(str(workdir / 'map.yaml'), """
 languages: [en, nl]
 reserved:
   fault_a: { global: 1, action: ABORT, en: "only english" }
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'W5' in _codes(issues)
+    assert 'description-missing-locale' in _codes(issues)
 
 
-def test_w6_severity_outside_known_vocabulary(workdir):
+def test_severity_outside_known_vocabulary(workdir):
     write(str(workdir / 'map.yaml'), """
 reserved:
   fault_a: { global: 1, action: ABORT, severity: SUPER_BAD, en: "x" }
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'W6' in _codes(issues)
+    assert 'unrecognized-severity' in _codes(issues)
 
 
-def test_w7_reserved_outside_band(workdir):
+def test_reserved_outside_band(workdir):
     write(str(workdir / 'map.yaml'), """
 reserved:
   fault_a: { global: 500, action: ABORT, en: "x" }
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'W7' in _codes(issues)
+    assert 'reserved-outside-band' in _codes(issues)
 
 
-def test_w8_no_heartbeat_timeout_reserved(workdir):
+def test_no_heartbeat_timeout_reserved(workdir):
     write(str(workdir / 'map.yaml'), 'languages: [en]\n')
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'W8' in _codes(issues)
+    assert 'no-heartbeat-timeout' in _codes(issues)
 
 
-def test_w9_node_key_with_slash(workdir):
+def test_node_key_with_slash(workdir):
     _minimal_node_yaml(str(workdir / 'a.yaml'), 'a')
     write(str(workdir / 'map.yaml'), f"""
 nodes:
@@ -486,17 +486,18 @@ nodes:
     base: 1000
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'W9' in _codes(issues)
+    assert 'node-key-has-slash' in _codes(issues)
 
 
 def test_strict_promotes_warnings_to_errors(workdir):
-    write(str(workdir / 'map.yaml'), 'languages: [en]\n')  # triggers W8 only
+    # triggers 'no-heartbeat-timeout' only
+    write(str(workdir / 'map.yaml'), 'languages: [en]\n')
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
     errors, warnings = agg.apply_strict(issues, strict=False)
-    assert errors == [] and any(i.code == 'W8' for i in warnings)
+    assert errors == [] and any(i.code == 'no-heartbeat-timeout' for i in warnings)
     errors_strict, warnings_strict = agg.apply_strict(issues, strict=True)
     assert warnings_strict == []
-    assert any(i.code == 'W8' for i in errors_strict)
+    assert any(i.code == 'no-heartbeat-timeout' for i in errors_strict)
 
 
 # ---------------------------------------------------------------------------
@@ -667,7 +668,7 @@ nodes:
 
 
 # ---------------------------------------------------------------------------
-# Regression tests for the adversarial-review findings (2026-07-15)
+# Regression tests for the adversarial-review findings
 # ---------------------------------------------------------------------------
 
 def test_languages_defaults_to_union_of_locales_found(workdir):
@@ -766,7 +767,7 @@ nodes:
     remap: {{ -5: 5090 }}
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'E2' in _codes(issues)
+    assert 'local-code-out-of-range' in _codes(issues)
 
 
 def test_malformed_base_window_remap_report_clean_error_not_crash(workdir):
@@ -813,7 +814,7 @@ reserved:
     assert 'instanced' not in catalog.reserved['heartbeat_timeout']['descriptions']
 
 
-def test_e1_does_not_false_positive_on_degenerate_window(workdir):
+def test_window_overlap_does_not_false_positive_on_degenerate_window(workdir):
     # 'other's window [1050, 1150) numerically brackets motor's degenerate
     # (empty) window at 1100 -- the old, unguarded overlap test flagged this
     # as an "overlap" even though an empty interval can never really collide
@@ -833,10 +834,10 @@ nodes:
     window: 100
 """)
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
-    assert 'E1' not in _codes(issues)
+    assert 'window-overlap' not in _codes(issues)
     # The degenerate window itself is still flagged, just not as a false
     # "overlap" with an unrelated node.
-    assert 'E6' in _codes(issues)
+    assert 'value-out-of-range' in _codes(issues)
 
 
 def test_unrecognized_action_warns(workdir):
@@ -895,3 +896,61 @@ nodes:
     _, issues = agg.aggregate(str(workdir / 'map.yaml'))
     errors, _ = agg.apply_strict(issues, strict=False)
     assert any(i.code == 'catalog-not-found' for i in errors)
+
+
+# ---------------------------------------------------------------------------
+# Category taxonomy, schema version, locale-tag normalization
+# ---------------------------------------------------------------------------
+
+def test_unrecognized_category_warns(workdir):
+    write(str(workdir / 'map.yaml'), """
+reserved:
+  fault_a: { global: 1, action: ABORT, category: Electrical, en: "x" }
+""")
+    _, issues = agg.aggregate(str(workdir / 'map.yaml'))
+    assert any(i.code == 'unrecognized-category' for i in issues)
+
+
+def test_known_category_does_not_warn(workdir):
+    write(str(workdir / 'map.yaml'), """
+reserved:
+  fault_a: { global: 1, action: ABORT, category: electrical, en: "x" }
+""")
+    _, issues = agg.aggregate(str(workdir / 'map.yaml'))
+    assert not any(i.code == 'unrecognized-category' for i in issues)
+
+
+def test_write_machine_yaml_includes_schema_version(workdir):
+    write(str(workdir / 'map.yaml'), """
+languages: [en]
+reserved:
+  heartbeat_timeout: { global: 1, action: ABORT, en: "hb lost" }
+""")
+    catalog, issues = agg.aggregate(str(workdir / 'map.yaml'))
+    provenance = agg._provenance(str(workdir / 'map.yaml'), catalog)
+    out_path = str(workdir / 'out' / 'machine_error_catalog.yaml')
+    agg.write_machine_yaml(catalog, provenance, out_path)
+    with open(out_path) as f:
+        doc = yaml.safe_load(f)
+    assert doc['schema_version'] == agg._schema.SCHEMA_VERSION
+
+
+def test_locale_case_variant_does_not_warn_unconfigured(workdir):
+    write(str(workdir / 'map.yaml'), """
+languages: [en]
+reserved:
+  fault_a: { global: 1, action: ABORT, EN: "upper-case locale key" }
+""")
+    _, issues = agg.aggregate(str(workdir / 'map.yaml'))
+    assert not any(i.code == 'unconfigured-locale' for i in issues)
+
+
+def test_locale_region_variant_satisfies_language_completeness(workdir):
+    write(str(workdir / 'map.yaml'), """
+languages: [en]
+reserved:
+  fault_a: { global: 1, action: ABORT, en-US: "region-tagged locale key" }
+""")
+    _, issues = agg.aggregate(str(workdir / 'map.yaml'))
+    assert 'description-missing-locale' not in _codes(issues)
+    assert not any(i.code == 'unconfigured-locale' for i in issues)
