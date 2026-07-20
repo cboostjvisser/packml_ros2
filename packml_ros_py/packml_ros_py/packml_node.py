@@ -23,6 +23,8 @@ delegated to the C++ PackmlNodeProtocol class via pybind11, ensuring
 single-source-of-truth behaviour between C++ and Python nodes.
 """
 
+import threading
+
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
@@ -115,6 +117,17 @@ class PackmlNode(Node):
 
         self._protocol.heartbeat.init(self.get_name(), heartbeat_interval_ms)
 
+        # Serializes post_event() against the periodic publisher: the C++
+        # latch itself is mutex-protected (no torn reads), but without this
+        # lock a periodic tick that has already snapshotted a clear latch can
+        # be overtaken by a full post_event(fault), then publish its stale
+        # HEALTHY with a HIGHER sequence number — which the manager reads as
+        # an immediate (false) clear of the fault it just raised.
+        # SYNC: keep in lockstep with heartbeat_publish_mutex_ in
+        # packml_ros/include/packml_ros/interface/packml_interface.hpp — both
+        # guard the identical race on the shared protocol_.heartbeat.
+        self._heartbeat_lock = threading.Lock()
+
         # Sensor-style QoS (best-effort, keep-last) — must match the manager's
         # heartbeat subscription, or QoS-incompatibility silently drops delivery.
         self._heartbeat_pub = self.create_publisher(NodeHeartbeat, '~/' + HEARTBEAT_TOPIC, sensor_qos)
@@ -204,32 +217,36 @@ class PackmlNode(Node):
         subsequent tick (instead of calling get_health_status()), so a transient
         getter cannot flap the alarm/state.  Posting a healthy/NONE event clears it.
         """
-        if health.action == NodeHealth.NONE:
-            self._protocol.heartbeat.clear_latch()
-        else:
-            self._protocol.heartbeat.set_latch(
-                health.status, health.action, health.error_code, health.message,
-                health.instance_id)
-        self._heartbeat_pub.publish(self._make_heartbeat(health))
+        with self._heartbeat_lock:
+            if health.action == NodeHealth.NONE:
+                self._protocol.heartbeat.clear_latch()
+            else:
+                self._protocol.heartbeat.set_latch(
+                    health.status, health.action, health.error_code, health.message,
+                    health.instance_id)
+            self._heartbeat_pub.publish(self._make_heartbeat(health))
 
     def _publish_heartbeat(self) -> None:
         """Periodic heartbeat callback — called by the internal timer."""
         if not self._protocol.heartbeat.is_active:
             return
-        # One atomic snapshot of the latch (no torn read vs a concurrent post_event),
-        # matching the C++ periodic publisher.
-        latch = self._protocol.heartbeat.latch_snapshot()
-        if latch.active:
-            # A post_event() fault is latched — repeat it, don't poll the getter.
-            health = NodeHealth()
-            health.status = latch.status
-            health.action = latch.action
-            health.error_code = latch.error_code
-            health.message = latch.message
-            health.instance_id = latch.instance_id
-        else:
-            health = self.get_health_status()
-        self._heartbeat_pub.publish(self._make_heartbeat(health))
+        # The lock makes snapshot → getter → publish atomic against a
+        # concurrent post_event() (see _heartbeat_lock); the snapshot itself
+        # is additionally torn-read-safe via the C++ latch mutex, matching
+        # the C++ periodic publisher.
+        with self._heartbeat_lock:
+            latch = self._protocol.heartbeat.latch_snapshot()
+            if latch.active:
+                # A post_event() fault is latched — repeat it, don't poll the getter.
+                health = NodeHealth()
+                health.status = latch.status
+                health.action = latch.action
+                health.error_code = latch.error_code
+                health.message = latch.message
+                health.instance_id = latch.instance_id
+            else:
+                health = self.get_health_status()
+            self._heartbeat_pub.publish(self._make_heartbeat(health))
 
     # ─── Internal service handlers ───────────────────────────────────────
 

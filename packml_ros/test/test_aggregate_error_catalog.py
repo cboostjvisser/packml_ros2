@@ -548,6 +548,37 @@ def test_package_uri_path_traversal_rejected(workdir, monkeypatch):
         agg.resolve_package_path('package://acme_gripper/../../../etc/passwd', str(workdir))
 
 
+def test_package_uri_absolute_relpath_rejected(workdir, monkeypatch):
+    # os.path.join discards the share dir entirely when the joined part is
+    # absolute, so a double slash ('package://pkg//etc/passwd') would escape
+    # without any '..' segment for the lexical traversal check to see.
+    share = str(workdir / 'share' / 'acme_gripper')
+    os.makedirs(share, exist_ok=True)
+    monkeypatch.setattr(
+        'ament_index_python.packages.get_package_share_directory',
+        lambda pkg: share)
+    with pytest.raises(ValueError, match='outside'):
+        agg.resolve_package_path('package://acme_gripper//etc/passwd', str(workdir))
+
+
+def test_package_uri_symlinked_share_file_accepted(workdir, monkeypatch):
+    # `colcon build --symlink-install` installs share files as symlinks into
+    # the source/build tree — resolving to a target outside share/ is the
+    # NORMAL case there, not an escape, and must not be rejected.
+    share = workdir / 'share' / 'acme_gripper' / 'config'
+    os.makedirs(share, exist_ok=True)
+    real = write(str(workdir / 'srctree' / 'error_catalog.yaml'), 'node_name: n\n')
+    os.symlink(real, str(share / 'error_catalog.yaml'))
+    monkeypatch.setattr(
+        'ament_index_python.packages.get_package_share_directory',
+        lambda pkg: str(workdir / 'share' / 'acme_gripper'))
+    resolved = agg.resolve_package_path(
+        'package://acme_gripper/config/error_catalog.yaml', str(workdir))
+    assert os.path.isfile(resolved)
+    with open(resolved) as f:
+        assert 'node_name' in f.read()
+
+
 def test_package_uri_resolves_within_share_dir(workdir, monkeypatch):
     share = str(workdir / 'share' / 'acme_gripper')
     os.makedirs(share, exist_ok=True)

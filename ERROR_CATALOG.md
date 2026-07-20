@@ -83,6 +83,19 @@ optional `overrides:` (keyed by the vendor's own local code) lets you
 substitute your own recovery-instruction text for a specific fault without
 forking the vendor's file.
 
+Each node also gets a `window:` (default 1000): its local codes must fall in
+`[1, window)`, and `base + window` bounds the node's global block. **Size the
+window to the vendor's whole code space, not to the codes cataloged so far.**
+Hardware suppliers commonly use their controller's native fault numbers
+(often four or five digits — e.g. a controller whose alarms span 0000-9999
+needs `window: 10000`), and a catalog that documents only a handful of them
+today will grow. A code outside the window fails the build
+(`local-code-out-of-range`) rather than aggregating silently, so nothing
+breaks unnoticed — but widening a window later, or adding a `remap:` per
+wild code, is avoidable churn if the window matches the supplier's numbering
+range from the start. Only when a vendor's native range is impractically
+huge (say, eight-digit codes) does per-code `remap:` become the better tool.
+
 Aggregate it at build time:
 
     // CMakeLists.txt
@@ -122,3 +135,85 @@ is never affected.
 [README](README.md)) ships a complete, working example of both steps —
 `packml_ros/examples/config/error_catalog.yaml` (the vendor side) and
 `packml_ros2/config/error_map.yaml` (the integrator side).
+
+## Pure-Python (ament_python) packages
+
+Both build hooks above are CMake functions, but a Python-only node or bringup
+package (build_type `ament_python`) has no CMakeLists.txt to call them from.
+The same two scripts can be invoked from `setup.py` instead.
+
+**Vendor side** — generate a Python constants module instead of a C++ header,
+and install the catalog alongside it:
+
+    # setup.py (before the setup() call)
+    import glob, os, subprocess, sys
+    from ament_index_python.packages import get_package_share_directory
+
+    # realpath, not abspath: under `colcon build --symlink-install` this
+    # setup.py runs as a symlink from the build dir — paths must resolve
+    # back to the real source tree.
+    _here = os.path.dirname(os.path.realpath(__file__))
+    subprocess.check_call([
+        sys.executable,
+        os.path.join(get_package_share_directory('packml_ros'),
+                     'cmake', 'generate_error_codes_header.py'),
+        '--python-only',
+        os.path.join(_here, 'config', 'error_catalog.yaml'),
+        os.path.join(_here, 'my_node_pkg'),   # your package's module directory
+        'error_codes',                        # generated submodule name
+    ])
+
+    # and in setup()'s data_files:
+    ('share/' + package_name + '/config', glob.glob('config/*.yaml')),
+
+    # your_node.py
+    from my_node_pkg import error_codes
+    msg.error_code = error_codes.OVERCURRENT
+
+This writes `my_node_pkg/error_codes/__init__.py` into the source tree (add it
+to `.gitignore` — it's a generated artifact, like the C++ header) rather than
+into a build directory, because `colcon build --symlink-install` runs
+`setup.py develop`, which has no build step that out-of-tree output could
+survive. Declare `<depend>packml_ros</depend>` and
+`<depend>ament_index_python</depend>` in package.xml so the generator script
+is installed before your package builds.
+
+**Integrator side** — run the aggregation from the bringup package's setup.py
+the same way:
+
+    subprocess.check_call([
+        sys.executable,
+        os.path.join(get_package_share_directory('packml_ros'),
+                     'cmake', 'aggregate_error_catalog.py'),
+        '--map', os.path.join(_here, 'config', 'error_map.yaml'),
+        '--output-dir', os.path.join(_here, 'config', 'generated'),
+    ])
+
+    # data_files:
+    ('share/' + package_name + '/config', glob.glob('config/generated/*')),
+
+A lint failure (duplicate global, broken catalog reference, …) exits non-zero,
+which fails `setup.py` — and with it `colcon build` — the same guarantee the
+CMake hook gives. Note the trade-off versus CMake: `setup.py` only re-runs
+when colcon rebuilds the package, so after editing a *referenced* vendor
+catalog, rebuild the bringup package explicitly
+(`colcon build --packages-select my_bringup_pkg`) — there is no `DEPFILE`
+mechanism to detect that automatically.
+
+## Vendor packages in another workspace
+
+Nothing above requires the vendor package and the bringup package to live in
+the same workspace or repository. `package://` URIs resolve through the ament
+index, so a bringup package can aggregate a catalog from any *installed*
+package — including one from an underlay workspace, built and sourced
+separately:
+
+    source ~/packml_ws/install/setup.bash      # provides packml_ros
+    cd ~/robot_ws                              # provides the vendor node + bringup
+    colcon build
+
+The aggregation records which file it read (path + content hash) in the
+generated catalog's `provenance:` block, so a stale-underlay mixup is
+diagnosable after the fact. If the vendor package isn't installed (or isn't
+sourced), the build fails with `catalog-not-found` rather than silently
+shipping an incomplete catalog.

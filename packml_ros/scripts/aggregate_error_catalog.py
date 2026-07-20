@@ -195,7 +195,10 @@ def resolve_package_path(spec, base_dir):
     the resolved package's own share directory — a `../` escape (e.g.
     package://foo/../../../etc/passwd) is rejected, since the package name in
     the URI is meant to be an authorization boundary (this package's own
-    install, nothing else).
+    install, nothing else). The check is lexical (no symlink resolution):
+    with `colcon build --symlink-install` the installed files are symlinks
+    into the package's build/source tree, and those are part of the
+    package's own install, not an escape.
     """
     if spec.startswith('package://'):
         rest = spec[len('package://'):]
@@ -203,14 +206,13 @@ def resolve_package_path(spec, base_dir):
             raise ValueError(
                 f"malformed package:// URI (no path after the package name): '{spec}'")
         pkg, relpath = rest.split('/', 1)
-        from ament_index_python.packages import get_package_share_directory
-        share_dir = os.path.realpath(get_package_share_directory(pkg))
-        resolved = os.path.realpath(os.path.join(share_dir, relpath))
-        if os.path.commonpath([resolved, share_dir]) != share_dir:
+        if '..' in relpath.split('/'):
             raise ValueError(
                 f"package:// URI '{spec}' resolves outside package '{pkg}'’s share "
                 f'directory — rejected')
-        return resolved
+        from ament_index_python.packages import get_package_share_directory
+        share_dir = os.path.realpath(get_package_share_directory(pkg))
+        return os.path.join(share_dir, relpath)
     if os.path.isabs(spec):
         return spec
     return os.path.realpath(os.path.join(base_dir, spec))

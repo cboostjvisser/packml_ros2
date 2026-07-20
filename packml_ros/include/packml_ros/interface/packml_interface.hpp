@@ -29,6 +29,7 @@
 #include <future>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -115,6 +116,17 @@ class PackmlNodeInterface
   rclcpp::Publisher<packml_msgs::msg::NodeHeartbeat>::SharedPtr heartbeat_publisher_;
   rclcpp::TimerBase::SharedPtr heartbeat_timer_;
 
+  /// Serializes post_event() against the periodic heartbeat timer: HeartbeatState's
+  /// latch_mutex_ (transition_guard.hpp) only protects the latch fields from a torn
+  /// read, not the read-decide-publish sequence around it. Without this, a timer tick
+  /// that already snapshotted a clear latch can be overtaken by a full post_event(fault)
+  /// — set_latch() + publish() — and then publish its stale HEALTHY at a HIGHER
+  /// sequence number, which the manager reads as an immediate (false) clear of the
+  /// fault it just raised.
+  /// SYNC: keep in lockstep with packml_ros_py/packml_ros_py/packml_node.py's
+  /// `_heartbeat_lock` — both guard the identical race on the shared protocol_.heartbeat.
+  std::mutex heartbeat_publish_mutex_;
+
 public:
   /// Returns the current health of this Equipment Module.
   /// Override to report real conditions; base implementation returns HEALTHY / NONE.
@@ -145,6 +157,7 @@ public:
     if (!heartbeat_publisher_) {
       return;  // init() not yet called
     }
+    std::lock_guard<std::mutex> lk(heartbeat_publish_mutex_);  // see heartbeat_publish_mutex_
     if (health.action == packml_msgs::msg::NodeHealth::NONE) {
       protocol_.heartbeat.clear_latch();
     } else {
@@ -289,7 +302,10 @@ public:
           return;  // silent mode: timer ticks but no message is published
         }
         packml_msgs::msg::NodeHealth health;
-        // One atomic snapshot of the latch (no torn read vs a concurrent post_event).
+        // Locking makes snapshot -> getter -> publish atomic against a concurrent
+        // post_event() (see heartbeat_publish_mutex_); the snapshot itself is
+        // additionally torn-read-safe via HeartbeatState's own latch mutex.
+        std::lock_guard<std::mutex> lk(heartbeat_publish_mutex_);
         const auto latch = protocol_.heartbeat.latch_snapshot();
         if (latch.active) {
           // A post_event() fault is latched — repeat it instead of polling the getter.

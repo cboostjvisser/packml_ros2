@@ -185,8 +185,13 @@ def generate_error_codes_python(yaml_file, output_dir, module_name, codes=None):
         for name, value in codes.items():
             f.write(f'{name}: int = {value}\n')
         f.write('\n')
-        items = ', '.join(f'"{name}": {value}' for name, value in codes.items())
-        f.write(f'ALL_CODES: dict[str, int] = {{{items}}}\n')
+        # One entry per line, single-quoted: for ament_python packages this
+        # file lives (gitignored) inside the linted source tree, so the output
+        # must itself pass the standard ament flake8 gate (line length, Q000).
+        f.write('ALL_CODES: dict[str, int] = {\n')
+        for name, value in codes.items():
+            f.write(f"    '{name}': {value},\n")
+        f.write('}\n')
 
 
 def generate_schema_keys_header(output_file):
@@ -217,11 +222,22 @@ if __name__ == '__main__':
         generate_schema_keys_header(sys.argv[2])
         sys.exit(0)
 
+    # A pure ament_python node package has no C++ compilation step, so writing
+    # a throwaway header it will never install/compile makes no sense — this
+    # mode generates only the Python constants module, invoked from setup.py
+    # instead of a CMakeLists.txt (see packml_ros_generate_error_codes.cmake's
+    # C++/CMake equivalent).
+    if len(sys.argv) == 5 and sys.argv[1] == '--python-only':
+        generate_error_codes_python(sys.argv[2], sys.argv[3], sys.argv[4])
+        sys.exit(0)
+
     if len(sys.argv) < 4 or len(sys.argv) > 5:
         print(
             f'Usage: {sys.argv[0]} <yaml_file> <output_header> <namespace> '
             f'[<python_output_dir>]\n'
-            f'   or: {sys.argv[0]} --schema-keys-header <output_file>',
+            f'   or: {sys.argv[0]} --schema-keys-header <output_file>\n'
+            f'   or: {sys.argv[0]} --python-only <yaml_file> <python_output_dir> '
+            f'<module_name>',
             file=sys.stderr)
         sys.exit(1)
 
