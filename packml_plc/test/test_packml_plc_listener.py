@@ -201,7 +201,7 @@ class TestIntegrationWithMockPLC(unittest.TestCase):
 
     def test_only_one_state_active(self):
         """
-        Per ISA-TR88.00.02: Only ONE state should be active at any time.
+        Only ONE state may be active at any time.
         Test that the mock PLC and listener maintain this invariant.
         """
         stop_event = threading.Event()

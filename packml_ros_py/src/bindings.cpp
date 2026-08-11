@@ -74,12 +74,52 @@ PYBIND11_MODULE(_packml_bindings, m)
              " error='" + r.error + "'>";
     });
 
+  // --- InFlightToken ---
+  // The arm on a state transition, held for exactly as long as the transition is in flight.
+  // C++ leans on the destructor; Python must not, because a live traceback or a reference cycle
+  // can delay collection and an arm is not something to leave to the collector -- so this is a
+  // context manager, and release() is bound for the handoff paths that outlive a `with` block.
+
+  py::class_<packml_ros::InFlightToken>(m, "InFlightToken")
+    .def("release", &packml_ros::InFlightToken::release,
+         "Give the arm back now. Idempotent.")
+    .def_property_readonly("armed", &packml_ros::InFlightToken::armed)
+    .def("__enter__", [](packml_ros::InFlightToken & t) -> packml_ros::InFlightToken & {
+      return t;
+    }, py::return_value_policy::reference_internal)
+    .def("__exit__", [](packml_ros::InFlightToken & t, py::object, py::object, py::object) {
+      t.release();
+      return false;
+    });
+
+  // --- ArmedTransition ---
+
+  py::class_<packml_ros::ArmedTransition>(m, "ArmedTransition")
+    .def_readonly("result", &packml_ros::ArmedTransition::result)
+    .def_property_readonly("arm",
+      [](packml_ros::ArmedTransition & a) -> packml_ros::InFlightToken & { return a.arm; },
+      py::return_value_policy::reference_internal);
+
   // --- TransitionGuard ---
 
   py::class_<packml_ros::TransitionGuard>(m, "TransitionGuard")
     .def(py::init<>())
+    .def("admit_state", &packml_ros::TransitionGuard::admit_state,
+         py::arg("target"),
+         "Decide a state request at GOAL ADMISSION and hold the decision until claim_state() "
+         "takes it. Call from the goal-admission callback, never the accepted callback: this is "
+         "the only point at which current_state_ has not yet been overwritten by this very "
+         "request's own status echo, so it is the only point where already_there is trustworthy.")
+    .def("claim_state", &packml_ros::TransitionGuard::claim_state,
+         py::arg("target"),
+         "Take the decision admit_state() parked for `target`, with its arm. Returns "
+         "ArmedTransition; keep the .arm alive for as long as the transition is in flight.",
+         py::return_value_policy::move)
     .def("request_state", &packml_ros::TransitionGuard::request_state,
-         py::arg("target"), "Request a state transition. Returns TransitionResult.")
+         py::arg("target"),
+         "admit_state() then claim_state(), for callers with no admission/execution split. "
+         "Returns ArmedTransition.",
+         py::return_value_policy::move)
     .def("request_mode", &packml_ros::TransitionGuard::request_mode,
          py::arg("target"), "Request a mode transition. Returns TransitionResult.")
     .def("on_status_update", &packml_ros::TransitionGuard::on_status_update,
@@ -138,12 +178,13 @@ PYBIND11_MODULE(_packml_bindings, m)
         return p.heartbeat; },
       py::return_value_policy::reference_internal);
 
-  // --- Topic / Service names ---
+  // --- Topic / Service / Action names ---
 
-  m.attr("STATE_TRANSITION_SERVICE") = packml_ros::kStateTransitionService;
+  m.attr("STATE_TRANSITION_ACTION") = packml_ros::kStateTransitionAction;
   m.attr("MODE_TRANSITION_SERVICE") = packml_ros::kModeTransitionService;
   m.attr("STATUS_TOPIC") = packml_ros::kStatusTopic;
   m.attr("ALARMS_TOPIC") = packml_ros::kAlarmsTopic;
   m.attr("HEARTBEAT_TOPIC") = packml_ros::kHeartbeatTopic;
   m.attr("PARAM_HEARTBEAT_INTERVAL_MS") = packml_ros::kParamHeartbeatIntervalMs;
+  m.attr("PARAM_DEFERRED_COMPLETION_TIMEOUT_MS") = packml_ros::kParamDeferredCompletionTimeoutMs;
 }

@@ -114,6 +114,15 @@ def generate_launch_description():
                 'heartbeat_timeout_factor': 3.0,
                 'heartbeat_startup_grace_ms': 10000,
                 'manual_mode_allows_health_bypass': False,
+                # This demo does not set 'node_names', so these nodes are health-
+                # monitored (via required_nodes above) but not fanned state/mode
+                # transitions at all -- there is no separate completion opt-in list to
+                # configure. To manage them too, add 'node_names' with these three
+                # names; since none of DemoMotorDriver/DemoSensorHub/DemoConveyor
+                # override defers_completion(), every coordinated acting state
+                # (RESETTING, STARTING, ...) would then complete instantly on
+                # acceptance -- see example_packml_node's defers_completion() override
+                # for the pattern to follow if one of them should genuinely defer.
                 # Aggregated at build time from config/error_map.yaml by
                 # packml_ros_aggregate_error_catalog() — see CMakeLists.txt.
                 'error_catalog_file': os.path.join(

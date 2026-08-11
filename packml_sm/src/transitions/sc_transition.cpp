@@ -36,15 +36,16 @@ bool StateCompleteTransition::eventTest(QEvent *e) {
     return false;
   }
 
-  // call parent function to test if transition is available
-  bool available = PackmlTransition::eventTest(e);
-
-  if (!available)
-  {
-    return false;
-  }
-
-  return true;
+  // Deliberately does NOT consult the mode mask. A mode governs what an operator may COMMAND
+  // (see target_available_in_current_mode() in packml_transitions.hpp); it must never decide
+  // whether the machine may FINISH a state it is already executing. Calling the base's
+  // eventTest() from here would apply that check, so masking a state would strand the machine
+  // inside the acting state that leads to it, with no exit, no alarm and no timeout, while the
+  // command that got it there still reported success.
+  //
+  // It does check WHOSE completion this is. Matching on event type alone made every completion
+  // interchangeable, so one state's could be consumed as another's, or as a later visit's.
+  return completion_matches_this_activation(static_cast<StateCompleteEvent *>(e)->token);
 }
 
 } // namespace packml_sm

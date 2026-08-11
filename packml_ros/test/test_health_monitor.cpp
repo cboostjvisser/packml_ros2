@@ -80,7 +80,7 @@ public:
     sub_ = node->create_subscription<NodeHeartbeat>(
       topic, rclcpp::SensorDataQoS(),
       [this](NodeHeartbeat::SharedPtr msg) {
-        std::lock_guard<std::mutex> lk(mutex_);
+        std::lock_guard<std::mutex> lk(messages_mutex_);
         messages_.push_back(*msg);
         count_.fetch_add(1);
       });
@@ -90,27 +90,24 @@ public:
 
   NodeHeartbeat last() const
   {
-    std::lock_guard<std::mutex> lk(mutex_);
+    std::lock_guard<std::mutex> lk(messages_mutex_);
     return messages_.empty() ? NodeHeartbeat{} : messages_.back();
   }
 
   std::vector<NodeHeartbeat> all() const
   {
-    std::lock_guard<std::mutex> lk(mutex_);
+    std::lock_guard<std::mutex> lk(messages_mutex_);
     return messages_;
   }
 
   void wait_for(int n, std::chrono::milliseconds timeout = 3s)
   {
-    auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (count_.load() < n && std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::sleep_for(10ms);
-    }
+    packml_ros_test::wait_until([this, n] {return count_.load() >= n;}, timeout, 10ms);
   }
 
 private:
   rclcpp::Subscription<NodeHeartbeat>::SharedPtr sub_;
-  mutable std::mutex mutex_;
+  mutable std::mutex messages_mutex_;
   std::vector<NodeHeartbeat> messages_;
   std::atomic<int> count_{0};
 };
@@ -1357,4 +1354,113 @@ TEST_F(SequenceCheckTest, IntervalClampedToMaxEnablesTimeout)
   monitor_->check_timeouts();
   ASSERT_FALSE(action_calls_.empty());
   EXPECT_EQ(action_calls_.back(), NodeHealth::ABORT);
+}
+
+// ============================================================================
+// is_node_healthy() — cross-check accessor for CompletionTracker
+// ============================================================================
+
+// A node never registered as required reports nullopt — the manager cannot cross-check
+// health for a node it isn't monitoring (e.g. coordinated but not required).
+TEST(IsNodeHealthyTest, UnregisteredNodeReturnsNullopt)
+{
+  HealthMonitor mon([](int32_t) {});
+  EXPECT_EQ(mon.is_node_healthy("em_a"), std::nullopt);
+}
+
+// A required node that has sent a healthy heartbeat reports true.
+TEST(IsNodeHealthyTest, HealthyRequiredNodeReturnsTrue)
+{
+  HealthMonitor mon([](int32_t) {});
+  mon.register_required_node("em_a");
+
+  NodeHeartbeat hb;
+  hb.node_name = "em_a";
+  hb.health.status = NodeHealth::HEALTHY;
+  hb.health.action = NodeHealth::NONE;
+  hb.heartbeat_interval_ms = 1000;
+  mon.on_heartbeat(hb);
+
+  EXPECT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(true));
+}
+
+// A required node that has not yet sent any heartbeat reports false ("never seen" is a
+// gate-blocking condition), not nullopt (it IS registered, just not yet healthy).
+TEST(IsNodeHealthyTest, NeverSeenRequiredNodeReturnsFalse)
+{
+  HealthMonitor mon([](int32_t) {});
+  mon.register_required_node("em_a");
+  EXPECT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(false));
+}
+
+// A required node reporting an actionable error (HOLD/SUSPEND/ABORT) reports false.
+TEST(IsNodeHealthyTest, UnhealthyRequiredNodeReturnsFalse)
+{
+  HealthMonitor mon([](int32_t) {});
+  mon.register_required_node("em_a");
+
+  NodeHeartbeat hb;
+  hb.node_name = "em_a";
+  hb.health.status = NodeHealth::ERROR;
+  hb.health.action = NodeHealth::ABORT;
+  hb.heartbeat_interval_ms = 1000;
+  mon.on_heartbeat(hb);
+
+  EXPECT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(false));
+}
+
+// A required node whose heartbeat has GONE STALE reports false, mirroring gate_block_reason()'s
+// own inline staleness check.
+//
+// The heartbeat below is what makes this test the one its name claims. Without it the node has
+// never been seen, and gate_block_reason() answers "never seen" from an earlier branch and returns
+// before it ever compares elapsed time against the timeout -- so the test passed while covering
+// nothing but the case the preceding test already covers, and would keep passing with the staleness
+// comparison deleted outright. Sending one heartbeat sets ever_seen and last_stamp, which is what
+// forces evaluation through to the stale branch.
+TEST(IsNodeHealthyTest, StaleHeartbeatOnRequiredNodeReturnsFalse)
+{
+  HealthMonitor mon([](int32_t) {});
+  mon.register_required_node("em_a", /*timeout_factor=*/3.0, /*startup_ms=*/1);
+
+  NodeHeartbeat hb;
+  hb.node_name = "em_a";
+  hb.health.status = NodeHealth::HEALTHY;
+  hb.health.action = NodeHealth::NONE;
+  // 20 ms x 3.0 = a 60 ms staleness bound. Both margins below are measured against that, and both
+  // need to be generous rather than tight: a 1 ms interval gives a 3 ms bound, which is less than
+  // one scheduler preemption, so the healthy PRECONDITION would fail on a loaded machine and read
+  // as a product bug.
+  hb.heartbeat_interval_ms = 20;
+  mon.on_heartbeat(hb);
+
+  ASSERT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(true))
+    << "a node that just sent a healthy heartbeat is not healthy -- the staleness bound was hit "
+       "before this line ran, so the assertion below would prove nothing";
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));  // 4x the 60 ms bound
+  EXPECT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(false))
+    << "a seen-then-silent node stayed healthy; check_timeouts() has not run, so this is the "
+       "inline staleness comparison and nothing else";
+}
+
+// A node that was unhealthy and then reports HEALTHY again reports true — the accessor
+// reflects live status, not a sticky latch.
+TEST(IsNodeHealthyTest, RecoveredNodeReturnsTrueAgain)
+{
+  HealthMonitor mon([](int32_t) {});
+  mon.register_required_node("em_a");
+
+  NodeHeartbeat hb;
+  hb.node_name = "em_a";
+  hb.health.status = NodeHealth::ERROR;
+  hb.health.action = NodeHealth::HOLD;
+  hb.heartbeat_interval_ms = 1000;
+  mon.on_heartbeat(hb);
+  ASSERT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(false));
+
+  hb.health.status = NodeHealth::HEALTHY;
+  hb.health.action = NodeHealth::NONE;
+  mon.on_heartbeat(hb);
+  EXPECT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(true));
 }

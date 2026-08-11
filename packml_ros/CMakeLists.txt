@@ -25,7 +25,9 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(packml_msgs REQUIRED)
 find_package(packml_sm REQUIRED)
 # find_package(std_msgs REQUIRED)
@@ -43,6 +45,7 @@ target_include_directories(
 target_link_libraries(
   ${PROJECT_NAME}_node
   PRIVATE rclcpp::rclcpp
+          rclcpp_action::rclcpp_action
           packml_sm::packml_sm
           ${packml_msgs_TARGETS}
           transition_guard
@@ -60,6 +63,7 @@ target_include_directories(
 target_link_libraries(
   example_packml_node
   PRIVATE rclcpp::rclcpp
+          rclcpp_action::rclcpp_action
           packml_sm::packml_sm
           ${packml_msgs_TARGETS}
           transition_guard
@@ -76,6 +80,7 @@ target_include_directories(
 target_link_libraries(
   example_health_demo
   PRIVATE rclcpp::rclcpp
+          rclcpp_action::rclcpp_action
           packml_sm::packml_sm
           ${packml_msgs_TARGETS}
           transition_guard
@@ -92,6 +97,7 @@ target_include_directories(
 target_link_libraries(
   ${PROJECT_NAME}
   INTERFACE rclcpp::rclcpp
+          rclcpp_action::rclcpp_action
           packml_sm::packml_sm
           ${packml_msgs_TARGETS}
           transition_guard
@@ -163,6 +169,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gmock REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(${PROJECT_NAME}_aggregate_error_catalog_tests test/test_aggregate_error_catalog.py)
+  ament_add_pytest_test(${PROJECT_NAME}_setup_helper_tests test/test_packml_ros_setup.py)
 
   # Main test executable with all packml_ros tests
   ament_add_gtest(${PROJECT_NAME}_tests
@@ -179,12 +186,25 @@ if(BUILD_TESTING)
     test/test_transition_guard.cpp
     test/test_health_monitor.cpp
     test/test_health_monitor_integration.cpp
+    test/test_completion_tracker.cpp
+    test/test_completion_integration.cpp
+    test/test_monkey_scenarios.cpp
+    test/test_monkey_reporting.cpp
+    test/test_monkey_health.cpp
+    test/test_monkey_fanout.cpp
+    test/test_monkey_multi_mode.cpp
+    test/test_monkey_edge_cases.cpp
+    test/test_monkey_alarms.cpp
+    test/test_monkey_manager_restart.cpp
+    test/test_monkey_fuzzer.cpp
     test/test_error_catalog.cpp
     # test/test_disabled_future_features.cpp
-    # Combined target runs ~60s (heartbeat/health tests use real-time waits, kept
-    # short via short test heartbeat intervals). That's at the ament 60s default,
-    # so bump the timeout for headroom without over-inflating it.
-    TIMEOUT 120
+    # Combined target runs ~150-190s pre-monkey-expansion (heartbeat/health/completion/monkey
+    # tests all use real-time waits, kept as short as each test can afford, but the suite has
+    # grown well past the ~60s this comment originally described, and the 8 new
+    # test_monkey_*.cpp files above add real-time waits of their own) -- bumped again with real
+    # headroom once actual runtime is observed post-build.
+    TIMEOUT 600
   )
 
   target_include_directories(
@@ -193,6 +213,35 @@ if(BUILD_TESTING)
                               $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
 
   target_link_libraries(${PROJECT_NAME}_tests ${PROJECT_NAME} transition_guard error_catalog Qt5::Core)
+
+  # This binary's own ROS domain; see test_main.cpp for why every test binary needs a distinct
+  # one. Applied in test_main.cpp rather than as an ament_add_test ENV so it also holds when the
+  # binary is run directly, which is how the contamination it prevents was first observed.
+  target_compile_definitions(${PROJECT_NAME}_tests PRIVATE PACKML_TEST_ROS_DOMAIN_ID=71)
+
+  # Shakedown probes: adversarial attack-surface tests (rogue publishers, poisoned config,
+  # reentrancy during in-flight waits, state-graph dark corners) kept in their OWN binary,
+  # deliberately separate from ${PROJECT_NAME}_tests: these hunt for crashes and deadlocks,
+  # and a probe that kills the process must not destabilize the polished main suite. Probes
+  # are promoted into the main suite (or dropped) after triage of what they find.
+  ament_add_gtest(${PROJECT_NAME}_shakedown
+    test/test_main.cpp
+    test/test_shakedown_wire.cpp
+    test/test_shakedown_config.cpp
+    test/test_shakedown_interleave.cpp
+    test/test_shakedown_stategraph.cpp
+    test/test_shakedown_guard.cpp
+    TIMEOUT 600
+  )
+
+  target_include_directories(
+    ${PROJECT_NAME}_shakedown PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+                              $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
+                              $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
+
+  target_link_libraries(${PROJECT_NAME}_shakedown ${PROJECT_NAME} transition_guard error_catalog Qt5::Core)
+
+  target_compile_definitions(${PROJECT_NAME}_shakedown PRIVATE PACKML_TEST_ROS_DOMAIN_ID=72)
 endif()
 
 # Error-catalog code generation function + script, for downstream node packages
@@ -225,6 +274,11 @@ install(
   DESTINATION lib/${PROJECT_NAME}
   RENAME aggregate_error_catalog
 )
+# The setup.py-side equivalent of packml_ros_aggregate_error_catalog(), for
+# ament_python bringup packages that have no CMakeLists.txt to call it from.
+# Installed as an importable module (not into share/) because a setup.py can
+# only reach it by `import packml_ros_setup`.
+ament_python_install_module(scripts/packml_ros_setup.py)
 
 #Substituting the catkin_package () components:
 ament_export_targets(${PROJECT_NAME}-targets)

@@ -26,6 +26,8 @@ namespace packml_sm
 void PackmlState::onEntry(QEvent * /*e*/)  // NOLINT(readability/casting)
 {
   PACKML_INFO_STREAM("packml_sm", "Entering state: " << name_.toUtf8().constData() << "(" << state_ << ")");
+  // Before the signal, so anything the stateEntered observers reach already sees this activation.
+  activation_.fetch_add(1, std::memory_order_release);
   emit stateEntered(state_, name_);
   enter_time_ = std::chrono::system_clock::now();
 }
@@ -34,6 +36,8 @@ void PackmlState::onEntry(QEvent * /*e*/)  // NOLINT(readability/casting)
 void PackmlState::onExit(QEvent * /*e*/)  // NOLINT(readability/casting)
 {
   PACKML_INFO_STREAM("packml_sm", "Exiting state: " << name_.toUtf8().constData() << "(" << state_ << ")");
+  // Ends this activation: anything still holding a token stamped with it is now stale.
+  activation_.fetch_add(1, std::memory_order_release);
   exit_time_ = std::chrono::system_clock::now();
   cummulative_time_ = cummulative_time_ + (exit_time_ - enter_time_);
   PACKML_INFO_STREAM("packml_sm", "Updating cummulative time, for state: " << name_.toUtf8().constData() << "(" <<

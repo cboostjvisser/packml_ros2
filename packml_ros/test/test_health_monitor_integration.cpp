@@ -38,6 +38,8 @@
 #include "test_helpers.hpp"
 
 using namespace std::chrono_literals;
+
+using packml_ros_test::send_state_change;
 using NodeHealth = packml_msgs::msg::NodeHealth;
 using NodeHeartbeat = packml_msgs::msg::NodeHeartbeat;
 
@@ -76,21 +78,10 @@ protected:
 };
 
 /// Call ~/changeState and return response (or nullptr on timeout).
-static packml_msgs::srv::StateChange::Response::SharedPtr send_state_change(
-  rclcpp::Node::SharedPtr node,
-  rclcpp::Client<packml_msgs::srv::StateChange>::SharedPtr client,
-  int8_t command,
-  std::chrono::seconds timeout = 5s)
-{
-  auto req = std::make_shared<packml_msgs::srv::StateChange::Request>();
-  req->command = command;
-  auto future = client->async_send_request(req);
-  if (future.wait_for(timeout) == std::future_status::ready) {
-    return future.get();
-  }
-  return nullptr;
-}
-
+///
+/// The node is taken but unused: a background SpinHelper pumps it for the whole fixture, so this
+/// waits on the future rather than spinning here. Kept in the signature so every call site reads
+/// the same as the other send_* helpers in this suite.
 // ============================================================================
 // Test fixture
 // ============================================================================
@@ -177,14 +168,7 @@ protected:
   /// Poll the manager state machine until it reaches `target` (or times out).
   bool wait_for_sm_state(packml_sm::State target, std::chrono::milliseconds timeout = 3s)
   {
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline) {
-      if (sm_node_->getCurrentState() == target) {
-        return true;
-      }
-      std::this_thread::sleep_for(20ms);
-    }
-    return sm_node_->getCurrentState() == target;
+    return packml_ros_test::wait_for_state(sm_node_, target, timeout);
   }
 
   std::string mgr_node_name_;
@@ -217,7 +201,7 @@ TEST_F(HealthIntegrationTest, GateBlocksResetUntilNodesHealthy)
   // The manager starts in UNDEFINED. STOP drives to STOPPED.
   // We need to get to STOPPED first.
   auto stop_resp = send_state_change(
-    mgr_node_, state_client_,
+    state_client_,
     packml_msgs::srv::StateChange::Request::STOP);
   // May fail if state machine isn't in a stoppable state — that's OK for this test.
   (void)stop_resp;
@@ -226,7 +210,7 @@ TEST_F(HealthIntegrationTest, GateBlocksResetUntilNodesHealthy)
 
   // EMs have NOT sent healthy heartbeats yet → gate should block RESET
   auto resp = send_state_change(
-    mgr_node_, state_client_,
+    state_client_,
     packml_msgs::srv::StateChange::Request::RESET);
 
   ASSERT_NE(resp, nullptr);
@@ -240,7 +224,7 @@ TEST_F(HealthIntegrationTest, GateBlocksResetUntilNodesHealthy)
 TEST_F(HealthIntegrationTest, GateOpensAfterAllNodesHealthy)
 {
   // Drive to STOPPED
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::STOP);
   std::this_thread::sleep_for(300ms);
 
@@ -249,7 +233,7 @@ TEST_F(HealthIntegrationTest, GateOpensAfterAllNodesHealthy)
 
   // RESET should now succeed
   auto resp = send_state_change(
-    mgr_node_, state_client_,
+    state_client_,
     packml_msgs::srv::StateChange::Request::RESET);
 
   ASSERT_NE(resp, nullptr);
@@ -261,17 +245,17 @@ TEST_F(HealthIntegrationTest, GateOpensAfterAllNodesHealthy)
 TEST_F(HealthIntegrationTest, EquipmentModuleHoldTriggersManagerHold)
 {
   // Get to EXECUTE: STOP → (healthy) → RESET → IDLE → START → EXECUTE
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::STOP);
   std::this_thread::sleep_for(300ms);
   make_all_healthy();
 
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::RESET);
   ASSERT_TRUE(wait_for_sm_state(packml_sm::State::IDLE))
     << "machine did not reach IDLE after RESET";
 
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::START);
   ASSERT_TRUE(wait_for_sm_state(packml_sm::State::EXECUTE))
     << "machine did not reach EXECUTE before fault injection";
@@ -297,17 +281,17 @@ TEST_F(HealthIntegrationTest, EquipmentModuleHoldTriggersManagerHold)
 TEST_F(HealthIntegrationTest, EquipmentModuleAbortTriggersManagerAbort)
 {
   // Get to EXECUTE
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::STOP);
   std::this_thread::sleep_for(300ms);
   make_all_healthy();
 
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::RESET);
   ASSERT_TRUE(wait_for_sm_state(packml_sm::State::IDLE))
     << "machine did not reach IDLE after RESET";
 
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::START);
   ASSERT_TRUE(wait_for_sm_state(packml_sm::State::EXECUTE))
     << "machine did not reach EXECUTE before fault injection";
@@ -326,22 +310,71 @@ TEST_F(HealthIntegrationTest, EquipmentModuleAbortTriggersManagerAbort)
     << static_cast<int>(sm_state);
 }
 
+// A required EM whose heartbeat sequence resets after a period of silence -- simulating
+// the EM process restarting -- drives the machine to ABORT. See
+// HealthMonitor::HeartbeatResult::RESTART and the fire_packml_action(ABORT) call in the
+// heartbeat-subscription callback (PackmlManagerInterface::init()): a restarted node's own
+// state is unknown, and PackML recovery goes through CLEAR->RESET regardless of what
+// triggered it, so RESTART is routed through the same health-escalation path as HOLD/
+// SUSPEND/ABORT rather than silently re-baselining. Expected: the SM ends up in ABORTING
+// or ABORTED. Note: at this fixture's 200ms check_timeouts() cadence, the heartbeat-TIMEOUT
+// path (checked independently, on the same silence) can also reach that outcome on its own, so
+// this test verifies the required end state rather than isolating the RESTART path.
+TEST_F(HealthIntegrationTest, RequiredNodeRestartTriggersManagerAbort)
+{
+  // Get to EXECUTE
+  send_state_change(state_client_,
+    packml_msgs::srv::StateChange::Request::STOP);
+  std::this_thread::sleep_for(300ms);
+  make_all_healthy();
+
+  send_state_change(state_client_,
+    packml_msgs::srv::StateChange::Request::RESET);
+  ASSERT_TRUE(wait_for_sm_state(packml_sm::State::IDLE))
+    << "machine did not reach IDLE after RESET";
+
+  send_state_change(state_client_,
+    packml_msgs::srv::StateChange::Request::START);
+  ASSERT_TRUE(wait_for_sm_state(packml_sm::State::EXECUTE))
+    << "machine did not reach EXECUTE before fault injection";
+
+  // Silence EM-B long enough to be observed absent (its per-node timeout is
+  // heartbeat_interval_ms(100) x heartbeat_timeout_factor(3) = 300ms), then replace it
+  // with a fresh instance on the same node/topic. A fresh HeartbeatState starts its
+  // sequence counter at 0, so its first published heartbeat (seq=1) is a backward jump
+  // from whatever EM-B last reported -- exactly the sequence-number collapse a real
+  // process restart produces.
+  em_b_->set_heartbeat_active(false);
+  std::this_thread::sleep_for(600ms);
+  em_b_.reset();
+  em_b_ = std::make_shared<SimEquipmentModule>(em_b_node_);
+
+  std::this_thread::sleep_for(1000ms);
+
+  auto sm_state = sm_node_->getCurrentState();
+  EXPECT_TRUE(
+    sm_state == packml_sm::State::ABORTING ||
+    sm_state == packml_sm::State::ABORTED)
+    << "Expected ABORTING or ABORTED after EM-B's heartbeat sequence reset "
+    << "(simulated restart), got: " << static_cast<int>(sm_state);
+}
+
 // An EM reporting SUSPEND while the machine is EXECUTE drives the machine to suspend.
 // Expected: the SM ends up in SUSPENDING or SUSPENDED.
 TEST_F(HealthIntegrationTest, EquipmentModuleSuspendTriggersManagerSuspend)
 {
   // Get to EXECUTE
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::STOP);
   std::this_thread::sleep_for(300ms);
   make_all_healthy();
 
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::RESET);
   ASSERT_TRUE(wait_for_sm_state(packml_sm::State::IDLE))
     << "machine did not reach IDLE after RESET";
 
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::START);
   ASSERT_TRUE(wait_for_sm_state(packml_sm::State::EXECUTE))
     << "machine did not reach EXECUTE before fault injection";
@@ -365,17 +398,17 @@ TEST_F(HealthIntegrationTest, EquipmentModuleSuspendTriggersManagerSuspend)
 TEST_F(HealthIntegrationTest, EquipmentModuleWarnDoesNotTriggerTransition)
 {
   // Get to EXECUTE
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::STOP);
   std::this_thread::sleep_for(300ms);
   make_all_healthy();
 
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::RESET);
   ASSERT_TRUE(wait_for_sm_state(packml_sm::State::IDLE))
     << "machine did not reach IDLE after RESET";
 
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::START);
   ASSERT_TRUE(wait_for_sm_state(packml_sm::State::EXECUTE))
     << "machine did not reach EXECUTE before fault injection";
@@ -400,7 +433,7 @@ TEST_F(HealthIntegrationTest, EquipmentModuleWarnDoesNotTriggerTransition)
 TEST_F(HealthIntegrationTest, HoldWhileStoppedDoesNotChangeState)
 {
   // Drive to STOPPED and wait for gate to open.
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::STOP);
   std::this_thread::sleep_for(300ms);
   make_all_healthy();
@@ -419,7 +452,7 @@ TEST_F(HealthIntegrationTest, HoldWhileStoppedDoesNotChangeState)
     << static_cast<int>(sm_state);
 
   // Gate must be closed (EM in error blocks RESET).
-  auto resp = send_state_change(mgr_node_, state_client_,
+  auto resp = send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::RESET);
   ASSERT_NE(resp, nullptr);
   EXPECT_FALSE(resp->success) << "RESET should be blocked while EM has active HOLD";
@@ -441,7 +474,7 @@ TEST_F(HealthIntegrationTest, AlarmClearPublishedOnFaultClear)
     });
 
   // Drive to STOPPED and make EMs healthy.
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::STOP);
   std::this_thread::sleep_for(300ms);
   make_all_healthy();
@@ -502,7 +535,7 @@ TEST_F(HealthIntegrationTest, StopEventIdCorrelatesEpisodeThenAdvances)
     return alarms;
   };
 
-  send_state_change(mgr_node_, state_client_,
+  send_state_change(state_client_,
     packml_msgs::srv::StateChange::Request::STOP);
   std::this_thread::sleep_for(300ms);
   make_all_healthy();

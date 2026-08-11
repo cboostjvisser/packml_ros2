@@ -29,11 +29,16 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <packml_sm/common.hpp>
 #include "packml_ros/ros_names.hpp"
 
 namespace packml_ros {
+
+class TransitionGuard;
 
 /// Result of a state or mode transition request.
 struct TransitionResult
@@ -41,6 +46,78 @@ struct TransitionResult
   bool accepted{false};      ///< Request was accepted (may still carry a warning in `error`).
   bool already_there{false}; ///< Node was already in the requested state/mode - no-op success.
   std::string error;         ///< Non-empty if there was a warning or rejection reason.
+};
+
+// ---------------------------------------------------------------------------
+/// Move-only handle to one armed, in-flight state transition.  Dropping it disarms the guard.
+///
+/// The arm exists to refuse a SECOND state transition while this node is working on one, so its
+/// lifetime is exactly "this node is working on it" -- which is a scope, and therefore a
+/// destructor.  Releasing it on whichever status echo reports a DIFFERENT state fails in both
+/// directions: a request ending without the state changing (the node refuses it, the deferred wait
+/// times out, the goal is cancelled) leaves the arm set, and a node adopting exactly the state it
+/// was asked for reports no change at all, so its own COMPLETED request stays armed and rejects
+/// the next one -- aborting a legitimate goal, failing the manager's coordinated wait, and
+/// collapsing a running machine to ABORTING.
+///
+/// Release is keyed on the arm's own id, not on its target state.  A superseded arm and a fresh
+/// arm for the same target are different arms, so a late release can never disarm somebody
+/// else's transition.
+///
+/// The token holds SHARED ownership of the guard's state, not a pointer to the guard, so a token
+/// can safely outlive the TransitionGuard it came from.  That is not a hypothetical: a detached
+/// deferred-completion thread can still hold one while its node is torn down, and Python's
+/// interpreter shutdown destroys the guard and the token in whatever order it likes.  With a raw
+/// back-pointer, releasing then locks a destroyed mutex -- which reliably hung the Python suite at
+/// exit.
+// ---------------------------------------------------------------------------
+class InFlightToken
+{
+public:
+  InFlightToken() = default;
+  ~InFlightToken() { release(); }
+
+  InFlightToken(InFlightToken && other) noexcept
+  : core_(std::move(other.core_)),
+    arm_id_(std::exchange(other.arm_id_, 0)) {}
+
+  InFlightToken & operator=(InFlightToken && other) noexcept
+  {
+    if (this != &other) {
+      release();
+      core_ = std::move(other.core_);
+      arm_id_ = std::exchange(other.arm_id_, 0);
+    }
+    return *this;
+  }
+
+  InFlightToken(const InFlightToken &) = delete;
+  InFlightToken & operator=(const InFlightToken &) = delete;
+
+  /// Disarm now rather than at scope exit.  Idempotent, and safe on an empty or moved-from
+  /// token.  Bound to Python's __exit__, which has no destructor to lean on.
+  void release() noexcept;
+
+  /// True while this token still holds an arm.
+  bool armed() const noexcept { return nullptr != core_; }
+
+private:
+  friend class TransitionGuard;
+  struct Core;
+  InFlightToken(std::shared_ptr<Core> core, uint64_t arm_id) noexcept
+  : core_(std::move(core)), arm_id_(arm_id) {}
+
+  std::shared_ptr<Core> core_;
+  uint64_t arm_id_{0};
+};
+
+/// A decided state request together with the arm it created.  Move-only, because the arm is.
+/// `arm` is disarmed when the decision was already_there or a rejection -- neither holds the
+/// guard, because neither is going to do any work that a second request must wait behind.
+struct ArmedTransition
+{
+  TransitionResult result;
+  InFlightToken arm;
 };
 
 // ---------------------------------------------------------------------------
@@ -53,26 +130,55 @@ struct TransitionResult
 class TransitionGuard
 {
 public:
-  TransitionResult request_state(packml_sm::State target);
+  TransitionGuard();
+  ~TransitionGuard();
+  TransitionGuard(const TransitionGuard &) = delete;
+  TransitionGuard & operator=(const TransitionGuard &) = delete;
+
+  /// Decide a state request AT GOAL ADMISSION and hold the decision -- and the arm it creates --
+  /// until that same goal's execution claims it with claim_state().
+  ///
+  /// The decision, above all whether this node is already_there, is taken here and never
+  /// recomputed, because admission is the only point where its input is clean.  already_there is
+  /// a function of current_state_, and current_state_ is poisoned by this very goal's own status
+  /// echo: the manager publishes it as soon as the SendGoal response lands, which is after this
+  /// call returns but can be before the goal executes.  Deciding later would mean inferring "an
+  /// echo must have raced me" from a snapshot, and an inference has false negatives where a stored
+  /// answer has none.
+  TransitionResult admit_state(packml_sm::State target);
+
+  /// Take the decision admit_state() parked for `target`, together with its arm.
+  ///
+  /// Falls back to deciding now -- loudly -- if nothing was admitted for this target, so a
+  /// caller that never had an admission step still works.  That fallback re-opens the racing-echo
+  /// hole for its one goal, which is why it says so rather than passing silently.
+  ArmedTransition claim_state(packml_sm::State target);
+
+  /// admit_state() immediately followed by claim_state(), for callers with no admission/execution
+  /// split -- direct users of the guard, and tests.
+  ArmedTransition request_state(packml_sm::State target);
+
   TransitionResult request_mode(packml_sm::ModeType target);
 
   /// Called when the manager publishes a status update.
   /// Clears in-flight switching flags and returns true if anything changed.
   bool on_status_update(packml_sm::State state, packml_sm::ModeType mode);
 
-  packml_sm::State    current_state()      const { std::lock_guard<std::mutex> lk(state_mutex_); return current_state_; }
-  packml_sm::ModeType current_mode()       const { std::lock_guard<std::mutex> lk(state_mutex_); return current_mode_; }
-  bool                is_switching_state() const { std::lock_guard<std::mutex> lk(state_mutex_); return waiting_for_state_; }
-  bool                is_switching_mode()  const { std::lock_guard<std::mutex> lk(state_mutex_); return waiting_for_mode_; }
+  packml_sm::State    current_state()      const;
+  packml_sm::ModeType current_mode()       const;
+  bool                is_switching_state() const;
+  bool                is_switching_mode()  const;
 
 private:
-  mutable std::mutex  state_mutex_;   // guards every field below
-  packml_sm::State    current_state_{packml_sm::State::UNDEFINED};
-  packml_sm::ModeType current_mode_{0};
-  packml_sm::State    switching_state_{packml_sm::State::UNDEFINED};
-  packml_sm::ModeType switching_mode_{0};
-  bool waiting_for_state_{false};
-  bool waiting_for_mode_{false};
+  friend class InFlightToken;
+
+  /// Decide a state request against the current view.  Caller holds core_->guard_mutex.
+  TransitionResult decide_state(packml_sm::State target);
+
+  // Every field lives here, behind one mutex, in a separately-allocated block that outstanding
+  // InFlightTokens co-own.  The indirection buys exactly one thing: a token may outlive the
+  // guard, and releasing must stay well-defined when it does.
+  std::shared_ptr<InFlightToken::Core> core_;
 };
 
 // ---------------------------------------------------------------------------
@@ -170,11 +276,18 @@ private:
 ///   PackmlNodeProtocol protocol_;
 ///   protocol_.transitions.request_state(state);
 ///   protocol_.heartbeat.next_sequence();
+///
+/// Note: the state-completion signal (see PackmlNodeInterface::on_deferred_work() /
+/// defers_completion()) is carried by the ~/packml_state_transition ACTION's own result and
+/// goal id -- it needs no shared pure-logic class here, unlike transitions/heartbeat. The
+/// deferred-completion wait itself is plumbing (a condition_variable in C++, a
+/// threading.Condition in Python) that differs enough between the two languages' action-server
+/// implementations that it is hand-written on each side rather than shared through pybind11.
 // ---------------------------------------------------------------------------
 struct PackmlNodeProtocol
 {
   TransitionGuard transitions;
-  HeartbeatState        heartbeat;
+  HeartbeatState  heartbeat;
 };
 
 

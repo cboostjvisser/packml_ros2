@@ -7,7 +7,6 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
-
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
@@ -22,7 +21,11 @@
 #include <memory>
 #include <thread>
 #include <atomic>
+#include <algorithm>
+#include <array>
+#include <functional>
 #include <string>
+#include <vector>
 
 #include "packml_ros/packml_ros-new.hpp"
 #include "packml_msgs/msg/status.hpp"
@@ -192,4 +195,126 @@ TEST_F(ManagerStatusPublicationTest, LateJoiningMatchedQosSubscriberGetsRetained
   EXPECT_TRUE(late_received.load())
     << "Late-joining subscriber with matching QoS never received the retained status";
   EXPECT_EQ(late_state.load(), StateMsg::IDLE);
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate-publisher detection on the status topic.
+//
+// packml_status is a bare global name and the manager is only its owner by convention. A second
+// publisher -- a duplicated launch entry, two managers started against one machine -- makes an
+// Equipment Module adopt a state nobody commanded and possibly skip coordinated work it believes
+// is already done, with nothing in either node's log to say so. foreign_publishers_on() is what
+// makes it visible; it reports, it does not prevent.
+// ---------------------------------------------------------------------------
+
+namespace {
+/// The GID of a publisher, in the shape foreign_publishers_on() compares against.
+std::array<uint8_t, RMW_GID_STORAGE_SIZE> gid_of(
+  const rclcpp::Publisher<packml_msgs::msg::Status>::SharedPtr & pub)
+{
+  const auto & gid = pub->get_gid();
+  std::array<uint8_t, RMW_GID_STORAGE_SIZE> out{};
+  std::copy(std::begin(gid.data), std::end(gid.data), out.begin());
+  return out;
+}
+
+/// Poll until `pred` holds for the reported publisher set, or give up. Discovery is what is being
+/// waited on here, and how long a participant takes to announce itself is an RMW question rather
+/// than a fixed number of milliseconds -- asserting on a single read would be asserting on timing.
+std::vector<std::string> await_publishers(
+  rclcpp::Node::SharedPtr observer,
+  const std::array<uint8_t, RMW_GID_STORAGE_SIZE> & own_gid,
+  const std::function<bool(const std::vector<std::string> &)> & pred)
+{
+  std::vector<std::string> seen;
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    seen = packml_ros::foreign_publishers_on(*observer, "/packml_status", own_gid);
+    if (pred(seen)) {
+      break;
+    }
+    std::this_thread::sleep_for(50ms);
+  }
+  return seen;
+}
+
+std::string join(const std::vector<std::string> & names)
+{
+  std::string joined;
+  for (const auto & name : names) {
+    if (!joined.empty()) { joined += ", "; }
+    joined += name;
+  }
+  return joined;
+}
+}  // namespace
+
+// Self-exclusion is by ENDPOINT, and this is the test that says so.
+//
+// The probe publisher below lives on the SAME NODE as the manager -- same name, same namespace,
+// different endpoint. That is the shape of a duplicated launch entry, which is the likeliest way
+// two publishers ever end up on this topic, and it is precisely what an exclusion keyed on
+// (node_name, node_namespace) cannot see: it would discard the manager's publisher as "self" and
+// report nothing. Excluding by GID reports it.
+TEST_F(ManagerStatusPublicationTest, StatusTopicSelfExclusionIsByEndpointNotByNodeName)
+{
+  auto probe_pub = node_->create_publisher<packml_msgs::msg::Status>(
+    "/packml_status", rclcpp::QoS(1).transient_local().reliable());
+
+  const auto seen = await_publishers(
+    node_, gid_of(probe_pub), [](const std::vector<std::string> & p) {return !p.empty();});
+
+  ASSERT_FALSE(seen.empty())
+    << "the manager's publisher was not reported to a probe sharing its node name and namespace -- "
+       "self-exclusion is matching on the node, not the endpoint, so a duplicated launch entry is "
+       "invisible to it";
+  const std::string expected = std::string(node_->get_namespace()) == "/"
+    ? "/" + std::string(node_->get_name())
+    : std::string(node_->get_namespace()) + "/" + node_->get_name();
+  EXPECT_NE(std::find(seen.begin(), seen.end(), expected), seen.end())
+    << "expected the manager's own node (" << expected << ") among: " << join(seen);
+}
+
+TEST_F(ManagerStatusPublicationTest, StatusTopicReportsAPublisherOnAnotherNode)
+{
+  auto rogue_name = packml_ros_test::unique_node_name("rogue_status_publisher");
+  auto rogue = rclcpp::Node::make_shared(rogue_name);
+  auto rogue_pub = rogue->create_publisher<packml_msgs::msg::Status>(
+    "/packml_status", rclcpp::QoS(1).transient_local().reliable());
+  packml_ros_test::SpinHelper rogue_spinner(rogue);
+
+  // Observed from the probe publisher's point of view, so both the manager's publisher and the
+  // rogue one are foreign to it.
+  auto probe_pub = node_->create_publisher<packml_msgs::msg::Status>(
+    "/packml_status", rclcpp::QoS(1).transient_local().reliable());
+  const std::string rogue_fq = "/" + rogue_name;
+
+  const auto seen = await_publishers(
+    node_, gid_of(probe_pub), [&rogue_fq](const std::vector<std::string> & p) {
+      return std::find(p.begin(), p.end(), rogue_fq) != p.end();
+    });
+
+  EXPECT_NE(std::find(seen.begin(), seen.end(), rogue_fq), seen.end())
+    << "the rogue publisher on " << rogue_fq << " was never reported; saw: " << join(seen);
+}
+
+// Nothing but this manager writes the topic, so a probe that excludes only itself still sees the
+// manager, and a check keyed on the manager's OWN publisher sees nobody. The latter is what
+// check_status_topic_ownership() does every tick in a healthy system, and it must stay quiet.
+TEST_F(ManagerStatusPublicationTest, StatusTopicIsQuietWhenTheManagerIsItsOnlyWriter)
+{
+  // Excluding a GID that belongs to no endpoint, so every publisher on the topic is reported.
+  std::array<uint8_t, RMW_GID_STORAGE_SIZE> nobody{};
+
+  std::vector<std::string> seen;
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    seen = packml_ros::foreign_publishers_on(*node_, "/packml_status", nobody);
+    if (seen.size() == 1u) {
+      break;
+    }
+    std::this_thread::sleep_for(50ms);
+  }
+  EXPECT_EQ(seen.size(), 1u)
+    << "expected exactly the manager's own publisher on the topic, saw: " << join(seen);
 }

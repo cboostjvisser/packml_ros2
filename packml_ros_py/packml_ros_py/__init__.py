@@ -22,15 +22,16 @@ The transition validation logic is backed by C++ TransitionGuard via pybind11.
 from packml_ros_py.packml_node import PackmlNode
 from packml_ros_py.enums import State, TransitionCmd, ModeType
 from packml_ros_py._packml_bindings import (
-    STATE_TRANSITION_SERVICE,
+    STATE_TRANSITION_ACTION,
     MODE_TRANSITION_SERVICE,
     STATUS_TOPIC,
     HEARTBEAT_TOPIC,
     PARAM_HEARTBEAT_INTERVAL_MS,
+    PARAM_DEFERRED_COMPLETION_TIMEOUT_MS,
 )
 
 __all__ = [
     'PackmlNode', 'State', 'TransitionCmd', 'ModeType',
-    'STATE_TRANSITION_SERVICE', 'MODE_TRANSITION_SERVICE', 'STATUS_TOPIC', 'HEARTBEAT_TOPIC',
-    'PARAM_HEARTBEAT_INTERVAL_MS',
+    'STATE_TRANSITION_ACTION', 'MODE_TRANSITION_SERVICE', 'STATUS_TOPIC', 'HEARTBEAT_TOPIC',
+    'PARAM_HEARTBEAT_INTERVAL_MS', 'PARAM_DEFERRED_COMPLETION_TIMEOUT_MS',
 ]

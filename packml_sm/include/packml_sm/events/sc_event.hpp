@@ -17,13 +17,20 @@
 #pragma once
 
 #include "QEvent"
+#include "packml_sm/events/activation_token.hpp"
 
 namespace packml_sm {
 
 static int PACKML_STATE_COMPLETE_EVENT_TYPE = QEvent::User + 2;
 
 struct StateCompleteEvent : public QEvent {
-  StateCompleteEvent()
-      : QEvent(QEvent::Type(PACKML_STATE_COMPLETE_EVENT_TYPE)) {}
+  // `token` names the state and the visit whose work this event reports finished. A completion is
+  // a claim about one specific activation, so StateCompleteTransition requires it: an event
+  // arriving without one cannot be attributed and is refused rather than credited to whichever
+  // state happens to be active.
+  explicit StateCompleteEvent(const ActivationToken & token_value = {})
+      : QEvent(QEvent::Type(PACKML_STATE_COMPLETE_EVENT_TYPE)), token(token_value) {}
+
+  ActivationToken token;
 };
 } // namespace packml_sm

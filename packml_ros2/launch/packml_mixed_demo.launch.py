@@ -52,6 +52,15 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'node_names': ['cpp_equipment_module', 'py_equipment_module'],
+            # Acting-state completion is coordinated automatically for every node in
+            # node_names -- there is no separate opt-in list: each node's own
+            # defers_completion() override decides whether it participates for a given
+            # state (both example nodes above defer only RESETTING, reporting it from
+            # on_deferred_work() ~500ms after accepting the transition). Raise
+            # this if a real Equipment Module's own commanded work can legitimately
+            # take longer than the default.
+            #
+            # 'state_complete_timeout_ms': 30000,
         }],
     )
 

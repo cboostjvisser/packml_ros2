@@ -42,25 +42,26 @@ bool CmdTransition::eventTest(QEvent *e) {
   PACKML_DEBUG_STREAM("packml_sm", "Received transition command: " << se->cmd
             << " on transition: " << this->name.toStdString());
 
-  // call parent function to test if transition is available
-  bool available = PackmlTransition::eventTest(e);
-
-  if (!available)
-  {
+  // Whose command this is comes first. Asking the mode mask about a command this transition was
+  // never for recorded a mask refusal against it -- so every unrelated command in flight looked,
+  // in the log, like one the mode had blocked.
+  //
+  // Returning without ignore() is only safe because CmdEvent is constructed already refused, so
+  // accept() below is the single thing that can mark a command claimed. Restore the event's
+  // born-accepted default and this early return silently reports every command as successful.
+  if (cmd != se->cmd) {
+    PACKML_DEBUG_STREAM("packml_sm", "Event is not for this transition");
     return false;
   }
 
-  //    ROS_INFO_STREAM("Type cmd: " << cmd << ", event cmd: " << se->cmd);
-  if (cmd == se->cmd) {
-    e->accept();
-    return true;
+  // A mode declares which states an operator may command the machine INTO, so this is the
+  // one transition kind that consults the mask. See target_available_in_current_mode().
+  if (!target_available_in_current_mode(e)) {
+    return false;
   }
 
-  PACKML_DEBUG_STREAM("packml_sm", "Event is not for this transition");
-
-  e->ignore();
-
-  return false;
+  e->accept();
+  return true;
 }
 
 } // namespace packml_sm

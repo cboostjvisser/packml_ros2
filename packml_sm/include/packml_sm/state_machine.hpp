@@ -22,8 +22,12 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <stop_token>
+#include <string>
+#include <vector>
 #include <qcoreevent.h>
 #include <qstatemachine.h>
+#include <QThreadPool>
 #include "QEvent"
 #include "QAbstractTransition"
 // #include "packml_sm/events.hpp"
@@ -58,18 +62,17 @@ namespace packml_sm
       if (event->type() == PACKML_CMD_EVENT_TYPE)
       {
         auto * ce = static_cast<CmdEvent *>(event);
-        if (ce->prom) {
-          if (event->isAccepted())
-          {
-            ce->prom->set_value(true);
-            PACKML_INFO("packml_sm", "We have accepted the event!");
-          }
-          else
-          {
-            ce->prom->set_value(false);
-            PACKML_WARN("packml_sm", "Event has not been accepted!");
-          }
+        if (event->isAccepted())
+        {
+          PACKML_INFO_STREAM("packml_sm", "Accepted command: " << ce->cmd);
         }
+        else
+        {
+          PACKML_WARN_STREAM("packml_sm", "No transition claimed command: " << ce->cmd);
+        }
+        // Never set_value() directly: the event's destructor answers too, and whichever arrives
+        // second must be the one that does nothing rather than the one that throws.
+        ce->answer(event->isAccepted());
       }
       else if (event->type() == PACKML_ERROR_EVENT_TYPE)
       {
@@ -107,8 +110,12 @@ class StateMachineInterface
 public:
   /**
   * @brief Function to activate the state machine
+  *
+  * Discarding the result leaves a machine that looks alive and answers nothing: it never enters
+  * a state, so it never publishes one, and every command is refused. Callers must decide what a
+  * failure means to them.
   */
-  virtual bool activate() = 0;
+  [[nodiscard]] virtual bool activate() = 0;
 
 
   /**
@@ -294,7 +301,7 @@ public:
   /**
   * @brief Function to activate the state machine
   */
-  bool activate();
+  [[nodiscard]] bool activate();
 
 
   /**
@@ -323,10 +330,31 @@ public:
   bool setStateOperation(State state, std::function<int()> method);
 
   /**
+  * @brief Like setStateOperation(), but `method` receives a std::stop_token that
+  *        becomes stop_requested() the moment this state is asked to exit EARLY --
+  *        i.e. a transition out of it (an operator's HOLD/SUSPEND/ABORT/STOP, or any
+  *        other command accepted while `method` is still running) was accepted before
+  *        `method` returned on its own. A `method` that observes the token can return
+  *        promptly instead of blocking the state machine's own exit for however long
+  *        its own internal wait/timeout would otherwise take. Returns false if the
+  *        state is not found or not an ActingState.
+  */
+  bool setInterruptibleStateOperation(State state, std::function<int(std::stop_token)> method);
+
+  /**
   * @brief Returns the cumulative time (seconds) spent in the given state
   *        since the SM was created.  Returns 0 if the state is not found.
   */
   double getStateCumulativeTime(State state) const;
+
+  /**
+  * @brief Names of the acting states that do NOT own an ERROR transition reaching their
+  *        declared failure target.  Must be empty: activate() refuses to start the machine
+  *        otherwise, because a failure of such a state's bound operation posts an event that
+  *        matches no transition, which Qt discards in silence -- leaving the machine wedged in
+  *        that state with no status change, no alarm and no log.
+  */
+  std::vector<std::string> errorEscapeReport() const;
 
 
   /**
@@ -349,20 +377,21 @@ public:
   /**
   * @brief Returns the most recent ModeType that was applied via changeMode().
   *        Defaults to ModeType{} (== 0) before the first successful change.
+  *
+  * Reads the applied mode back out of the generator under mode_mask_mutex(),
+  * rather than from a cached copy: the mode and the availability mask it
+  * selects are stored together and written in one locked pass, so the two can
+  * never be observed disagreeing.  Out of line because StatesGenerator is only
+  * forward-declared here.
   */
-  ModeType getCurrentMode() const
-  {
-    return current_mode_;
-  }
+  ModeType getCurrentMode() const;
 
   /**
   * @brief Returns the AvailableStates mask that was applied with the most
-  *        recent successful changeMode() call.
+  *        recent successful changeMode() call.  Same storage and same lock as
+  *        getCurrentMode().
   */
-  AvailableStates getAvailableStates() const
-  {
-    return current_avail_;
-  }
+  AvailableStates getAvailableStates() const;
 
   /**
   * @brief Returns the last error code reported by an Acting state's bound
@@ -412,10 +441,49 @@ protected:
   *        any length without time-based hacks.
   */
   void drainActingStates();
+
+  /// Point every ActingState this machine owns at operation_pool_. Called once per cycle init,
+  /// after the states exist and before the machine can be activated.
+  void bindOperationThreadPool();
+
+  /**
+  * @brief Ask every ActingState's in-flight bound operation to stop, without waiting for any of
+  *        them.  The request onExit() makes on every ordinary path, made on the one path Qt skips:
+  *        QStateMachine::stop() does not call onExit() on active states.
+  *
+  *        Called twice by deactivate() on purpose.  Before stop(), so an interruptible operation
+  *        can return early instead of the drain waiting out its full duration.  After the machine
+  *        has stopped, because a transition could still have fired in between and onEntry() gives
+  *        the new visit a FRESH stop source -- once stopped, no further entry can happen, so the
+  *        second call is the one that makes the coverage complete.
+  */
+  void requestActingStatesStop();
+
+  /**
+  * @brief Hand @p command to the inner QStateMachine and block until transition selection has
+  *        answered it.  Returns true only when a transition claimed the command.
+  *
+  *        Returns false -- promptly, and with an ERROR naming which one it is -- in the four
+  *        cases where an answer can never arrive: the machine is not running, the caller is the
+  *        Qt event-loop thread itself, the caller is a bound operation the machine's exit path
+  *        is waiting on, and the machine stops while the command is still queued.  None of
+  *        those is a rejected transition, and none of them may look like one in the log.
+  */
+  bool postCommand(TransitionCmd command);
+
   /**
   * @brief Class constructor
   */
   StateMachine();
+
+  /// This machine's OWN pool for acting-state bound operations.
+  ///
+  /// Declared before `gen` so it is destroyed after the states that submit to it. It exists because
+  /// ~StateMachine() has to wait for those operations, and waiting on
+  /// QThreadPool::globalInstance() waited for every other QtConcurrent user in the process too --
+  /// an assumption about who else is in the address space, not a guarantee this class can make.
+  /// Owning the pool also means the operations draw threads from a budget nobody else can exhaust.
+  QThreadPool operation_pool_;
 
   std::shared_ptr<StatesGenerator> gen;
 
@@ -483,13 +551,6 @@ protected:
   * @brief Name of the current state
   */
   QString state_name_;
-
-  /**
-  * @brief Cached mode + mask (set by successful changeMode calls).  See
-  *        getCurrentMode() / getAvailableStates().
-  */
-  ModeType current_mode_{};
-  AvailableStates current_avail_{};
 
   /**
   * @brief Last error code reported by an acting-state operation.

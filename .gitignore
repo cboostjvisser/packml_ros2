@@ -6,9 +6,13 @@ __pycache__/
 # C extensions
 *.so
 
-# colcon / ROS 2 workspace outputs
+# colcon / ROS 2 workspace outputs. The suffixed forms catch side builds made with
+# --build-base/--install-base, e.g. a sanitizer or profiling tree.
 install/
 log/
+/build_*/
+/install_*/
+/log_*/
 
 # Distribution / packaging
 .Python

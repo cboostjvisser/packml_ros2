@@ -43,13 +43,22 @@ int main(int argc, char ** argv)
   while (QCoreApplication::instance() == nullptr) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
-  qt.detach();
 
   testing::InitGoogleTest(&argc, argv);
   const int rc = RUN_ALL_TESTS();
 
+  // Joined, not detached. Detaching left `app` -- a stack object on that thread -- being
+  // destroyed while this thread was already inside exit()'s handlers unloading libQt5Core, which
+  // segfaulted AFTER every test had reported: 2 of 3 runs under load, 0 of 3 runs alone. Joining
+  // puts the whole teardown before main returns, so there is no window to lose.
+  //
+  // quit() is delivered as a queued call rather than invoked directly, so the loop's own thread
+  // is what leaves exec(). Every fixture has already been torn down by the time gtest returns, so
+  // the loop is idle and this returns immediately; a hang here would mean a test leaked a state
+  // machine still running a bound operation on the Qt thread.
   if (auto * app = QCoreApplication::instance()) {
-    app->quit();
+    QMetaObject::invokeMethod(app, "quit", Qt::QueuedConnection);
   }
+  qt.join();
   return rc;
 }

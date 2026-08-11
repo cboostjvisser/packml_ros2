@@ -23,8 +23,10 @@
 #include <qglobal.h>
 #include <rmw/qos_profiles.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <functional>
 #include <future>
 #include <map>
@@ -33,6 +35,17 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <condition_variable>
+#include <optional>
+#include <stop_token>
+#include <thread>
+
+#include "packml_sm/modes_config.hpp"
+// The generated mode set -- is_known_mode() is what on_change_mode() validates against.
+#include "packml_sm/default_modes.hpp"
+#include "packml_ros/detached_worker_gate.hpp"
+#include "packml_ros/deferred_completion.hpp"
 
 #include <rclcpp/callback_group.hpp>
 #include <rclcpp/client.hpp>
@@ -44,13 +57,14 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/subscription.hpp>
 #include <rclcpp/utilities.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 
 #include <packml_sm/common.hpp>
 #include <packml_sm/state_machine.hpp>
 #include <packml_ros/transition_guard.hpp>
 
+#include <packml_msgs/action/state_transition.hpp>
 #include <packml_msgs/srv/mode_transition.hpp>
-#include <packml_msgs/srv/state_transition.hpp>
 #include <packml_msgs/msg/status.hpp>
 
 #include <packml_msgs/msg/state.hpp>
@@ -61,6 +75,7 @@
 #include <packml_msgs/srv/mode_change.hpp>
 #include <packml_msgs/srv/state_change.hpp>
 #include "packml_ros/health_monitor.hpp"
+#include "packml_ros/completion_tracker.hpp"
 #include "packml_ros/error_catalog.hpp"
 
 namespace packml_ros {
@@ -94,11 +109,45 @@ namespace packml_ros {
 
 class PackmlNodeInterface
 {
+public:
+  using StateTransitionAction = packml_msgs::action::StateTransition;
+  using StateTransitionGoalHandle = rclcpp_action::ServerGoalHandle<StateTransitionAction>;
 
-  /**
-  * @brief Pointer for transition service server
-  */
-  rclcpp::Service<packml_msgs::srv::StateTransition>::SharedPtr trans_server_;
+  /// Do not return while a detached deferred-completion thread is still inside this object.
+  ///
+  /// begin_transition() hands a goal off to a detached thread that then uses this object for as
+  /// long as deferred_completion_timeout_ms allows -- configurable, and realistically seconds.
+  /// Nothing joined it, so a node destroyed inside that window (a launch shutdown, a Ctrl-C, a
+  /// supervisor restart) left a live thread reading freed members and resolving a goal through a
+  /// destroyed action server.
+  ///
+  /// Two steps, and both are needed: the flag plus the notify make an in-flight wait give up now
+  /// instead of riding out its timeout, and the gate is what actually holds this destructor until
+  /// the thread has left. Only the flag would still race; only the gate would stall teardown for
+  /// the full timeout.
+  ///
+  /// Virtual because subclasses are what this class exists to be -- deleting one through a base
+  /// pointer was undefined before this declaration existed. Worth knowing: the worker touches only
+  /// this class's own members, so by the time a subclass destructor has already run, waiting here
+  /// is still safe.
+  virtual ~PackmlNodeInterface()
+  {
+    {
+      std::lock_guard<std::mutex> lk(completion_signal_->deferrals_mutex);
+      completion_signal_->shutting_down = true;
+    }
+    completion_signal_->deferral_progress_cv.notify_all();
+    deferred_workers_.await_idle();
+  }
+
+private:
+  /// Action server for ~/packml_state_transition — replaces a plain service because the
+  /// RESULT is not "accepted" (that happens fast, same as before) but "this node's own
+  /// commanded work for the requested state has finished (or failed)", which can take far
+  /// longer than an accept decision. The action's own goal id is the manager's correlation
+  /// mechanism for "an answer to the cycle I'm currently waiting on" -- no separate
+  /// generation/sequence field is carried on the wire.
+  rclcpp_action::Server<StateTransitionAction>::SharedPtr trans_action_server_;
 
   /**
   * @brief Pointer for state and elapsed time status update service server
@@ -126,6 +175,237 @@ class PackmlNodeInterface
   /// SYNC: keep in lockstep with packml_ros_py/packml_ros_py/packml_node.py's
   /// `_heartbeat_lock` — both guard the identical race on the shared protocol_.heartbeat.
   std::mutex heartbeat_publish_mutex_;
+
+  /// Deferred-completion synchronization: the wakeup shared by every deferral this node has in
+  /// flight (see CompletionSignal). Each deferral's own payload -- reported/success/error_code/
+  /// message -- lives in that goal's DeferralState instead of here, which is what keeps one goal's
+  /// completion out of another's wait: only the goal's own handle can reach its own record.
+  ///
+  /// A single shared slot was enough while only one ~/packml_state_transition goal ran at a time
+  /// (the manager's wait for the previous one resolves before it sends the next), but "one at a
+  /// time" is not "one ever": a cancelled goal's work can still be running, and still reporting,
+  /// while its successor defers. Keyed by nothing but the state NAME, that late report resolved the
+  /// successor's wait -- and a state name recurs (RESETTING via ABORT->CLEAR->RESET, HOLDING via a
+  /// full cycle), so the name matched and the manager advanced on work that had not finished.
+  const std::shared_ptr<packml_ros::detail::CompletionSignal> completion_signal_{
+    std::make_shared<packml_ros::detail::CompletionSignal>()};
+
+  /// EM-side safety net: how long a node that defers completion for a state will wait for
+  /// its own on_deferred_work() to report before giving up on itself. Default, configurable
+  /// via the deferred_completion_timeout_ms parameter (see init()); some states genuinely
+  /// need a different bound than others (a homing RESETTING vs. a near-instant ABORTING), so
+  /// deferred_completion_timeout_ms_by_state_ (also populated in init(), one entry per state
+  /// this node's own defers_completion() returns true for) is checked first.
+  int deferred_completion_timeout_ms_{30000};
+  std::map<packml_sm::State, int> deferred_completion_timeout_ms_by_state_;
+
+  /// The detached wait_for_deferred_completion() threads currently inside this object. Read the
+  /// destructor for what this is for; in short, nothing joined those threads and they use this
+  /// object for as long as the timeout above allows, so destroying the node under one of them used
+  /// freed memory. The flag that tells them to stop waiting is completion_signal_->shutting_down.
+  packml_ros::DetachedWorkerGate deferred_workers_;
+
+  /// Update this node's own view of its current state the moment it locally commits
+  /// to succeeding a transition, rather than waiting for the manager's status-topic
+  /// echo to arrive. waiting_for_state_ is otherwise only cleared by on_status_update()
+  /// (see TransitionGuard::request_state()'s "already in progress" rejection) — when
+  /// the manager moves through two coordinated states in quick succession (e.g. the
+  /// IDLE waypoint on the way to STARTING), this node's own next goal can arrive
+  /// before that echo does, and get rejected as a conflicting in-flight request even
+  /// though nothing actually conflicts: this node already knows, locally, that it
+  /// just finished the previous one. Reuses on_status_update() (rather than a new
+  /// TransitionGuard method) since the effect needed -- clear the waiting flag, adopt
+  /// the new current_state_ -- is exactly what it already does for a real echo; a
+  /// later, genuinely-redundant echo of the same state is then just a no-op.
+  void mark_state_locally_reached(packml_sm::State state)
+  {
+    protocol_.transitions.on_status_update(state, protocol_.transitions.current_mode());
+  }
+
+  /// Runs SYNCHRONOUSLY on the ROS executor thread from handle_accepted (below) — deliberately
+  /// NOT on a spawned thread. This matters for a real race, not just style: the manager fans out
+  /// the transition request BEFORE publishing the latched packml_status update specifically so an
+  /// EM sees "you're being asked to transition" before "the machine is now in that state" (see
+  /// packml_ros-new.hpp's on_state_changed) — an EM that saw status FIRST would hit the
+  /// already_there shortcut and skip this node's own on_state_trans_req()/defers_completion()
+  /// entirely. Deferring this decision onto a spawned thread reopens that race: thread
+  /// creation/scheduling latency is enough for the status topic — delivered on this same executor
+  /// thread's queue — to be processed first. Only the (potentially long) deferred WAIT below is
+  /// moved onto its own thread; the entire accept/reject/instant-complete decision is made here,
+  /// immediately, with no thread hop at all.
+  void begin_transition(const std::shared_ptr<StateTransitionGoalHandle> & goal_handle)
+  {
+    const auto state = static_cast<packml_sm::State>(goal_handle->get_goal()->state.val);
+    auto result = std::make_shared<StateTransitionAction::Result>();
+
+    // The arm this claim carries is released by its destructor, so every exit below -- the
+    // already-there shortcut, the rejection, the node refusing the switch, the immediate
+    // success, and both outcomes of the deferred wait -- gives it back without having to
+    // remember to. Nothing else releases it: a status echo cannot, because it has no way to
+    // know whose request it would be ending.
+    auto claimed = protocol_.transitions.claim_state(state);
+    const auto & guard_result = claimed.result;
+
+    if (guard_result.already_there) {
+      RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "Node already in state: " << to_string(state));
+      result->success = true;
+      goal_handle->succeed(result);
+      return;
+    }
+
+    RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "Node State changing to: " << to_string(state));
+
+    if (!guard_result.error.empty()) {
+      RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), guard_result.error);
+    }
+
+    if (!guard_result.accepted) {
+      result->success = false;
+      result->error_code = StateTransitionAction::Result::INVALID_STATE_REQUEST;
+      result->message = guard_result.error;
+      goal_handle->abort(result);
+      return;
+    }
+
+    if (!on_state_trans_req(state)) {
+      const std::string error_string = "Node did not approve state switch";
+      RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), error_string);
+      result->success = false;
+      result->message = error_string;
+      goal_handle->abort(result);
+      return;
+    }
+
+    RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "Node approved state switch");
+
+    // defers_completion() is a static, state-shape answer (does this node defer THIS state at
+    // all), not a per-request decision -- so asking it here, after the accept, costs nothing.
+    if (!defers_completion(state)) {
+      result->success = true;
+      goal_handle->succeed(result);
+      mark_state_locally_reached(state);
+      return;
+    }
+
+    // This goal's own completion record, and the only handle that can reach it. Nothing else
+    // shares it, so a report from an earlier goal's still-running work has no path to this wait.
+    auto deferral = std::make_shared<packml_ros::detail::DeferralState>(completion_signal_, state);
+
+    // Synchronously on this (ROS executor) thread, for the same reason the accept decision above
+    // runs here: this is what dispatches the node's own commanded work, and the work has to be
+    // under way before the manager's status echo can arrive. Reporting from inside the hook is
+    // fine -- the record already exists, so an instant report is simply already there when the
+    // wait below starts.
+    on_deferred_work(state, packml_ros::DeferredCompletion(deferral));
+
+    // Deferred: hand off to a background thread that only waits for that report — the one part of
+    // this that can legitimately take a long time.
+    //
+    // The arm moves with the work. The transition is still in flight until that thread resolves
+    // the goal, so releasing it here -- when this frame returns -- would let a second goal in
+    // while the first is still waiting.
+    // Counted BEFORE the spawn, not inside the new thread: teardown slipping between the two is
+    // exactly the window ~PackmlNodeInterface() has to be able to close.
+    deferred_workers_.enter();
+    std::thread(
+      &PackmlNodeInterface::wait_for_deferred_completion, this, goal_handle, result,
+      std::move(claimed.arm), std::move(deferral)).detach();
+  }
+
+  void wait_for_deferred_completion(
+    const std::shared_ptr<StateTransitionGoalHandle> goal_handle,
+    std::shared_ptr<StateTransitionAction::Result> result,
+    // Named but never read: this parameter exists so the arm's lifetime spans this function, and
+    // its destructor is what releases it on every exit below.
+    [[maybe_unused]] packml_ros::InFlightToken arm,
+    std::shared_ptr<packml_ros::detail::DeferralState> deferral)
+  {
+    // Every return below leaves the gate, which is what lets ~PackmlNodeInterface() know this
+    // thread is no longer inside the object.
+    packml_ros::DetachedWorkerGate::Scope worker_scope(deferred_workers_);
+
+    const auto state = deferral->state;
+    const auto override_it = deferred_completion_timeout_ms_by_state_.find(state);
+    const int timeout_ms = override_it != deferred_completion_timeout_ms_by_state_.end()
+      ? override_it->second
+      : deferred_completion_timeout_ms_;
+
+    // Bounded so a subclass that never reports can't hang the goal forever. A report or the node
+    // shutting down both wake this wait through completion_signal_->deferral_progress_cv.
+    //
+    // Cancellation cannot be woken for, which is why this is a re-checking loop and not one
+    // wait_for. handle_cancel() runs BEFORE rclcpp_action moves the goal to CANCELING, so its
+    // notify arrives while is_canceling() is still false, and nothing notifies again once the
+    // transition does happen. A single wait_for therefore slept through every cancel and gave the
+    // goal back only when the timeout expired -- 30 s by default. The interval below is a
+    // re-check cadence, not a deadline: a report or a shutdown still wakes the wait instantly, and
+    // the overall bound is still timeout_ms. Same shape, and for the same reason, as
+    // StateMachine::postCommand()'s liveness re-check.
+    static constexpr auto kCancelRecheckInterval = std::chrono::milliseconds(50);
+    bool reported = false;
+    bool shutting_down = false;
+    {
+      const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+      std::unique_lock<std::mutex> lk(completion_signal_->deferrals_mutex);
+      while (!deferral->reported && !goal_handle->is_canceling() &&
+        !completion_signal_->shutting_down)
+      {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+          break;
+        }
+        completion_signal_->deferral_progress_cv.wait_for(
+          lk, std::min<std::chrono::steady_clock::duration>(
+            kCancelRecheckInterval, deadline - now));
+      }
+
+      reported = deferral->reported;
+      shutting_down = completion_signal_->shutting_down;
+      if (reported) {
+        result->success = deferral->success;
+        result->error_code = deferral->error_code;
+        result->message = deferral->message;
+      } else {
+        // Nothing waits on this goal from here on. Marking it says so to a report that arrives
+        // later -- work that kept running past its own cancellation -- which is discarded with a
+        // warning instead of silently going nowhere. It cannot reach any OTHER goal's wait: this
+        // record is the only thing its handle refers to.
+        deferral->abandoned = true;
+      }
+    }
+
+    // Teardown started while this wait was in flight. The destructor is already blocked waiting
+    // for this thread, so riding out the rest of the configured timeout would hold up the whole
+    // process; give the goal a terminal state and get out. Checked before the branches below
+    // because "not reported" is true here too, and "timed out" would be the wrong thing to tell
+    // a client about a node that is going away.
+    if (shutting_down && !reported && !goal_handle->is_canceling()) {
+      result->success = false;
+      result->message = "Equipment Module shutting down while deferring completion";
+      goal_handle->abort(result);
+      return;
+    }
+
+    if (goal_handle->is_canceling()) {
+      goal_handle->canceled(result);
+      return;
+    }
+    if (!reported) {
+      result->success = false;
+      result->message =
+        "Deferred completion for " + to_string(state) + " timed out with no report";
+      RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), result->message);
+      goal_handle->abort(result);
+      return;
+    }
+    if (result->success) {
+      goal_handle->succeed(result);
+      mark_state_locally_reached(state);
+    } else {
+      goal_handle->abort(result);
+    }
+  }
 
 public:
   /// Returns the current health of this Equipment Module.
@@ -167,6 +447,48 @@ public:
     heartbeat_publisher_->publish(make_heartbeat(health));
   }
 
+  /// Override to return true for states where your own commanded work finishes later than the
+  /// transition is approved -- the states you implement on_deferred_work() for. The default, for
+  /// every state, is to complete the moment on_state_trans_req() approves the transition. This is
+  /// how a node declares -- in its OWN code, not manager-side configuration -- that it participates
+  /// in coordinated completion for a given state.
+  ///
+  /// Must be a static, state-shape answer (does this node defer THIS state at all), not a per-
+  /// request decision: init() probes it once per state to decide which
+  /// deferred_completion_timeout_ms.<STATE> overrides to declare.
+  virtual bool defers_completion(packml_sm::State state)
+  {
+    (void)state;
+    return false;
+  }
+
+  /// Start this node's own commanded work for `state`, and resolve `completion` when that work has
+  /// genuinely finished or definitively failed. Called once per accepted goal, for exactly the
+  /// states defers_completion() returns true for.
+  ///
+  /// Runs on the ROS executor thread and must not block: put long work on a thread of your own and
+  /// capture `completion` into it (it is copyable and safe to hold for as long as you need).
+  /// Reporting inline, before returning, is also fine for work that is already done.
+  ///
+  /// The handle is per-goal, which is the point of the shape: identity travels with the work
+  /// instead of being re-derived when the report arrives. Work that outlives its own goal -- a
+  /// homing motion already issued to hardware, still running after an operator's ABORT cancelled
+  /// the goal that asked for it -- reports into a record nothing is waiting on, and can see that
+  /// coming via completion.abandoned(). It cannot resolve whatever goal is deferring by then, not
+  /// even when that goal is for the same state under a different name for the same press of the
+  /// same button.
+  virtual void on_deferred_work(packml_sm::State state, packml_ros::DeferredCompletion completion)
+  {
+    RCLCPP_ERROR_STREAM(rclcpp::get_logger("packml_ros"),
+      "defers_completion(" << to_string(state) << ") returned true but on_deferred_work() is not "
+      "implemented, so nothing can ever complete this state. Implement it, or stop deferring "
+      "this state.");
+    completion.report(
+      false, StateTransitionAction::Result::INVALID_STATE_REQUEST,
+      "Node defers completion for " + to_string(state) +
+      " but implements no on_deferred_work()");
+  }
+
   protected:
 
   /// Pause or resume heartbeat publishing.  Protected: intended for derived test/demo
@@ -198,35 +520,6 @@ public:
 
   template <typename NodeT>
   inline void init(std::shared_ptr<NodeT> node) {
-
-    auto onStateTranseReq =
-      [this](const std::shared_ptr<packml_msgs::srv::StateTransition::Request> req,
-        std::shared_ptr<packml_msgs::srv::StateTransition::Response> res) -> void {
-            auto state = static_cast<packml_sm::State>(req->state.val);
-            auto result = protocol_.transitions.request_state(state);
-
-            if (result.already_there) {
-              RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "Node already in state: " << to_string(state));
-              res->success = true;
-              return;
-            }
-
-            RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "Node State changing to: " << to_string(state));
-
-            if (!result.error.empty()) {
-              RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), result.error);
-            }
-
-            if (result.accepted && on_state_trans_req(state)) {
-              RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "Node approved state switch");
-              res->success = true;
-            } else {
-              std::string error_string = "Node did not approve state switch";
-              res->message = error_string;
-              res->success = false;
-              RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), error_string);
-            }
-        };
 
     auto onModeTransReq =
       [this](const std::shared_ptr<packml_msgs::srv::ModeTransition::Request> req,
@@ -269,7 +562,88 @@ public:
         }
       };
 
-    trans_server_ = node->template create_service<packml_msgs::srv::StateTransition>("~/" + std::string(packml_ros::kStateTransitionService), onStateTranseReq);
+    // --- State-transition action server ---
+    if (!node->has_parameter(packml_ros::kParamDeferredCompletionTimeoutMs)) {
+      node->template declare_parameter<int>(packml_ros::kParamDeferredCompletionTimeoutMs, 30000);
+    }
+    deferred_completion_timeout_ms_ =
+      node->get_parameter(packml_ros::kParamDeferredCompletionTimeoutMs).as_int();
+
+    // Per-state override: declared only for states this node's own defers_completion()
+    // actually returns true for (a static, state-shape answer -- see that method's own
+    // doc comment), so a node that defers nothing, or only one or two states, does not
+    // clutter its parameter list with overrides it will never use. Named
+    // "deferred_completion_timeout_ms.<STATE NAME>", defaulting to the value above.
+    static constexpr packml_sm::State kAllStates[] = {
+      packml_sm::State::UNDEFINED, packml_sm::State::CLEARING, packml_sm::State::STOPPED,
+      packml_sm::State::STARTING, packml_sm::State::IDLE, packml_sm::State::SUSPENDED,
+      packml_sm::State::EXECUTE, packml_sm::State::STOPPING, packml_sm::State::ABORTING,
+      packml_sm::State::ABORTED, packml_sm::State::HOLDING, packml_sm::State::HELD,
+      packml_sm::State::UNHOLDING, packml_sm::State::SUSPENDING, packml_sm::State::UNSUSPENDING,
+      packml_sm::State::RESETTING, packml_sm::State::COMPLETING, packml_sm::State::COMPLETE,
+    };
+    for (const auto state : kAllStates) {
+      if (!defers_completion(state)) {
+        continue;
+      }
+      const std::string state_timeout_param =
+        std::string(packml_ros::kParamDeferredCompletionTimeoutMs) + "." +
+        packml_sm::to_string(state);
+      if (!node->has_parameter(state_timeout_param)) {
+        node->template declare_parameter<int>(state_timeout_param, deferred_completion_timeout_ms_);
+      }
+      deferred_completion_timeout_ms_by_state_[state] =
+        node->get_parameter(state_timeout_param).as_int();
+    }
+
+    auto handle_goal =
+      [this](const rclcpp_action::GoalUUID &,
+        std::shared_ptr<const StateTransitionAction::Goal> goal) -> rclcpp_action::GoalResponse {
+        // Pure admission control -- always accept. Business-logic accept/reject (the
+        // on_state_trans_req() hook) happens in the execute thread below as a normal, fast
+        // succeeded/aborted result, so a rejection still carries a proper Result message
+        // (error_code/message) rather than the goal simply vanishing with no result at all.
+        //
+        // admit_state() runs here, not in handle_accepted below: this callback's GoalResponse is
+        // what the SendGoal service response is built from, and that response cannot reach the
+        // manager (unblocking its own bounded acceptance wait, which gates publish_status())
+        // before this call returns. So current_state_ here is still this goal's PRE-echo view,
+        // and it is the only moment at which "am I already in the requested state" can be
+        // answered without the answer being poisoned by the very request being answered.
+        protocol_.transitions.admit_state(
+          static_cast<packml_sm::State>(goal->state.val));
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+      };
+
+    auto handle_cancel =
+      [this](const std::shared_ptr<StateTransitionGoalHandle> &) -> rclcpp_action::CancelResponse {
+        // Wake a deferred wait rather than leaving it to its own timeout. This notify is an
+        // OPTIMISATION and cannot be the mechanism, which is why wait_for_deferred_completion()
+        // re-checks on an interval instead of trusting it.
+        //
+        // rclcpp_action calls this callback FIRST and only transitions the goal to CANCELING
+        // afterwards (Server::call_handle_cancel_callback runs handle_cancel_, then
+        // goal_handle->_cancel_goal(); rcl_action_process_cancel_request explicitly does not change
+        // goal state). So is_canceling() is still false for the duration of this call, and a wait
+        // woken here re-evaluates a predicate that is still entirely false and parks itself again.
+        // There is no second notification: without the interval re-check that wait would ride out
+        // the whole deferred_completion_timeout_ms.
+        completion_signal_->deferral_progress_cv.notify_all();
+        return rclcpp_action::CancelResponse::ACCEPT;
+      };
+
+    auto handle_accepted =
+      [this](const std::shared_ptr<StateTransitionGoalHandle> & goal_handle) {
+        // Synchronous on this (ROS executor) thread — see begin_transition()'s own comment for
+        // why: the fan-out-before-status ordering the manager relies on depends on it. Only a
+        // genuinely deferred completion spawns a background thread, and only for the wait.
+        begin_transition(goal_handle);
+      };
+
+    trans_action_server_ = rclcpp_action::create_server<StateTransitionAction>(
+      node, "~/" + std::string(packml_ros::kStateTransitionAction),
+      handle_goal, handle_cancel, handle_accepted);
+
     mode_server_ = node->template create_service<packml_msgs::srv::ModeTransition>("~/" + std::string(packml_ros::kModeTransitionService), onModeTransReq);
     // Match the latched status publisher (TRANSIENT_LOCAL + RELIABLE, see where
     // status_pub_ is created) so a module that (re)starts after the packml node has
@@ -332,32 +706,117 @@ public:
 
 class PackmlClientInterface {
   public:
-  rclcpp::Client<packml_msgs::srv::StateTransition>::SharedPtr state_tr_client;
+  rclcpp_action::Client<packml_msgs::action::StateTransition>::SharedPtr state_tr_client;
   rclcpp::Client<packml_msgs::srv::ModeTransition>::SharedPtr mode_tr_client;
   rclcpp::Subscription<packml_msgs::msg::Status>::SharedPtr status_sub;
 
-  // Clients live in the node's default callback group: fan-out responses arrive as
-  // asynchronous callbacks delivered by whatever executor spins the manager node.
-  // (A previous design gave each client its own callback group plus a manually
-  // spun executor so a blocking wait inside a service callback could pump the
-  // responses without re-entering the main executor; the fan-out is asynchronous
-  // now, so none of that machinery is needed.)
+  /// Clients live in the node's default callback group: fan-out responses arrive as
+  /// asynchronous callbacks delivered by whatever executor spins the manager node. No
+  /// per-client callback group or separately spun executor is needed, because nothing blocks
+  /// inside a service callback waiting for those responses.
   PackmlClientInterface(std::string name, rclcpp::Node::SharedPtr parent_node) {
-    auto state_tr_service_name = name + "/" + packml_ros::kStateTransitionService;
     auto mode_tr_service_name = name + "/" + packml_ros::kModeTransitionService;
-
-    state_tr_client = parent_node->create_client<packml_msgs::srv::StateTransition>(state_tr_service_name);
     mode_tr_client = parent_node->create_client<packml_msgs::srv::ModeTransition>(mode_tr_service_name);
+
+    auto state_tr_action_name = name + "/" + packml_ros::kStateTransitionAction;
+    state_tr_client = rclcpp_action::create_client<packml_msgs::action::StateTransition>(
+      parent_node, state_tr_action_name);
   }
 };
 
+/// Fully-qualified names of publishers on `topic` other than `own_publisher`.
+///
+/// The manager owns the status topic in the sense that it is the only thing meant to write it, but
+/// packml_status is a bare global name with nothing enforcing that. A second publisher -- a
+/// duplicated launch entry, two managers started against one machine -- makes an Equipment Module
+/// adopt a state nobody commanded, and can make it shortcut coordinated work it never did on the
+/// grounds that it is "already there". Nothing about that is visible from either node's own logs,
+/// which is what this exists to change; it is a report, not a defence, and a deployment that needs
+/// the topic to be genuinely unwritable wants secure ROS instead.
+///
+/// SELF IS EXCLUDED BY ENDPOINT GID, NOT BY NODE NAME, and the distinction is the whole point.
+/// Matching on (node name, namespace) also excludes a second node that happens to share this one's
+/// name and namespace -- which is exactly a duplicated launch entry, the first case named above and
+/// the likeliest one in practice. ROS 2 permits duplicate node names, so that filter was blind to
+/// the scenario the function exists for. A GID identifies the individual endpoint.
+///
+/// Returns an empty vector on a graph-query failure, which reads the same as "no duplicates". That
+/// is the right direction for a diagnostic: a discovery hiccup must not produce a warning about a
+/// second manager that does not exist.
+namespace packml_ros {
+inline std::vector<std::string> foreign_publishers_on(
+  const rclcpp::Node & node,
+  const std::string & topic,
+  const std::array<uint8_t, RMW_GID_STORAGE_SIZE> & own_gid)
+{
+  std::vector<rclcpp::TopicEndpointInfo> publishers;
+  try {
+    publishers = node.get_publishers_info_by_topic(topic);
+  } catch (const std::exception &) {
+    return {};
+  }
+
+  std::vector<std::string> others;
+  for (const auto & publisher : publishers) {
+    if (publisher.endpoint_gid() == own_gid) {
+      continue;
+    }
+    const std::string ns = publisher.node_namespace();
+    others.push_back((ns == "/" ? ns : ns + "/") + publisher.node_name());
+  }
+  return others;
+}
+}  // namespace packml_ros
+
 class PackmlManagerInterface
 {
-  // Client name and client interface object
+  /// Client name and client interface object
   std::map<std::string, std::shared_ptr<PackmlClientInterface>> client_map_;
 
   rclcpp::Service<packml_msgs::srv::ModeChange>::SharedPtr mode_server_;
   rclcpp::Service<packml_msgs::srv::StateChange>::SharedPtr state_server_;
+
+  /// One state command accepted but not yet evaluated. Carries the service and request id because
+  /// the response is sent later, from the command worker -- see on_change_state(). Both are null for
+  /// a command nobody is waiting on an answer for: a health-raised action (fire_packml_action()) is
+  /// queued the same way and through the same FIFO, so operator commands and health actions cannot
+  /// reach the machine out of the order they were raised in.
+  struct QueuedCommand
+  {
+    std::shared_ptr<rclcpp::Service<packml_msgs::srv::StateChange>> service;
+    std::shared_ptr<rmw_request_id_t> request_id;
+    packml_sm::TransitionCmd command{packml_sm::TransitionCmd::NO_COMMAND};
+  };
+
+  /// Depth at which the backlog is worth telling an operator about. Not a limit -- see
+  /// on_change_state() for why the queue has none.
+  static constexpr size_t kCommandBacklogWarnDepth = 16;
+
+  /// Answer one deferred ~/changeState request, surviving a caller that is no longer there.
+  ///
+  /// `send_response()` throws on any middleware failure other than a timeout, and a client that
+  /// vanished between issuing a command and being answered is an ordinary event rather than a
+  /// manager fault. This mostly runs on the command worker, which has no exception handler above
+  /// it, so an escaping throw would take the whole process down.
+  static void send_command_response(
+    const std::shared_ptr<rclcpp::Service<packml_msgs::srv::StateChange>> & service,
+    rmw_request_id_t & request_id,
+    packml_msgs::srv::StateChange::Response & res)
+  {
+    try {
+      service->send_response(request_id, res);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"),
+        "Could not deliver the answer to a state command: " << e.what() <<
+        " -- the caller is most likely gone");
+    }
+  }
+
+  std::mutex command_queue_mutex_;
+  std::condition_variable command_queue_cv_;
+  std::deque<QueuedCommand> command_queue_;
+  bool command_worker_stopping_{false};
+  std::thread command_worker_;
   rclcpp::Service<packml_msgs::srv::AllStatus>::SharedPtr status_server_;
 
   rclcpp::Publisher<packml_msgs::msg::Status>::SharedPtr status_pub_;
@@ -373,6 +832,32 @@ class PackmlManagerInterface
 
   /// Periodic timer that drives heartbeat timeout checks.
   rclcpp::TimerBase::SharedPtr health_timeout_timer_;
+
+  /// Periodic timer that watches for a second publisher on the status topic — see
+  /// foreign_publishers_on(). Separate from health_timeout_timer_ and far slower: a graph query
+  /// walks every discovered endpoint, and a duplicate manager is a launch-time mistake that stays
+  /// wrong, not something worth checking five times a second.
+  rclcpp::TimerBase::SharedPtr status_owner_timer_;
+
+  /// The last set of foreign status publishers reported, so the warning repeats only when the
+  /// answer changes rather than every tick forever.
+  std::vector<std::string> reported_status_publishers_;
+
+  /// Embedded completion-signal aggregator — structurally parallel to health_monitor_ but
+  /// independent of it: completion is a progress fact, not a health fact. Aggregates the
+  /// ~/packml_state_transition action's per-node results for every node in node_names — there
+  /// is no separate opt-in list: a node's own defers_completion() override is what decides
+  /// whether it participates meaningfully, not manager-side configuration.
+  std::unique_ptr<CompletionTracker> completion_tracker_;
+
+  /// The currently in-flight state-transition goal handle per client node (this fan-out
+  /// round only) — needed to issue a cancel if completion_tracker_ times out waiting on it.
+  /// Guarded by its own mutex: written from goal_response_callback/result_callback (ROS
+  /// executor thread), read from the setStateOperation-bound function (QtConcurrent thread).
+  std::map<std::string,
+    rclcpp_action::ClientGoalHandle<packml_msgs::action::StateTransition>::SharedPtr>
+    active_state_goals_;
+  std::mutex active_state_goals_mutex_;
 
   /// Publisher for alarm events — one message per alarm raise/update/clear.
   rclcpp::Publisher<packml_msgs::msg::Alarm>::SharedPtr alarm_pub_;
@@ -400,33 +885,33 @@ class PackmlManagerInterface
   rclcpp::Node::SharedPtr node_;
 
 protected:
-  // Health-gate bypass config (see init()). A RESET from STOPPED with a required
-  // EM in ERROR is bypassed ONLY when bypass is explicitly enabled AND the machine
-  // is in the configured manual/maintenance mode. Default: no bypass — the gate
-  // enforces health in every mode. (Heartbeat TIMEOUT is never bypassable.)
+  /// Health-gate bypass config (see init()). A RESET from STOPPED with a required
+  /// EM in ERROR is bypassed ONLY when bypass is explicitly enabled AND the machine
+  /// is in the configured manual/maintenance mode. Default: no bypass — the gate
+  /// enforces health in every mode. (Heartbeat TIMEOUT is never bypassable.)
   bool manual_mode_allows_health_bypass_{false};
   int64_t health_bypass_mode_{-1};   // mode value that permits bypass; -1 = none
   bool all_required_seen_{false};    // latches true once every required node reported
 
-  // TODO: This should be private!
-  // Also this should be in state machine class?
-  // Read by publish_status() from the Qt SM thread (via on_mode_changed/on_state_changed)
-  // and written/read on the ROS executor thread → atomic to avoid a data race.
+  /// TODO: This should be private!
+  /// Also this should be in state machine class?
+  /// Read by publish_status() from the Qt SM thread (via on_mode_changed/on_state_changed)
+  /// and written/read on the ROS executor thread → atomic to avoid a data race.
   std::atomic<packml_sm::ModeType> current_mode{0};
+  /// Per-mode AvailableStates masks parsed from modes_config_file, loaded once in init().
+  /// Empty when no config was supplied, in which case changeMode()'s all-open overload is the
+  /// correct behaviour rather than a silent wipe. See on_change_mode()'s use of it.
+  std::map<packml_sm::ModeType, packml_sm::AvailableStates> mode_masks_;
 
-  // TODO: This should be private!
-  // Written by on_state_changed on the Qt SM thread and read by the health gate +
-  // publish_status on the ROS executor thread → atomic so the gate never reads a
-  // torn/stale current_state (a stale read could skip the RESET health check).
+  /// TODO: This should be private!
+  /// Written by on_state_changed on the Qt SM thread and read by the health gate +
+  /// publish_status on the ROS executor thread → atomic so the gate never reads a
+  /// torn/stale current_state (a stale read could skip the RESET health check).
   std::atomic<packml_sm::State> current_state{packml_sm::State::UNDEFINED};
   packml_sm::State switching_state;
 
   static rclcpp::Client<packml_msgs::srv::ModeTransition>::SharedPtr get_mode_client(std::shared_ptr<PackmlClientInterface> client) {
     return client->mode_tr_client;
-  }
-
-  static rclcpp::Client<packml_msgs::srv::StateTransition>::SharedPtr get_state_client(std::shared_ptr<PackmlClientInterface> client) {
-    return client->state_tr_client;
   }
 
   // -------------------------------------------------------------------------
@@ -444,6 +929,11 @@ protected:
   {
     enum class ClientStatus { PENDING, ACKED, FAILED };
     std::string kind;                               ///< "state" or "mode" — for logs/alarms
+    /// Fan-out round this object belongs to (state fan-out only; 0 for mode, which has no
+    /// per-round completion tracking). A ClientFanout deliberately outlives a round -- its 5s
+    /// deadline versus the round's much longer completion budget -- so it must carry the round
+    /// it came from rather than assuming it is still the live one.
+    uint64_t round{0};
     std::chrono::steady_clock::time_point deadline;
     std::map<std::string, ClientStatus> clients;
     std::map<std::string, int64_t> request_ids;     ///< to prune unanswered SENT requests
@@ -453,20 +943,39 @@ protected:
     /// break the resulting ownership cycle.
     std::map<std::string, std::function<bool()>> unsent_;
     std::function<void(const std::string &, int64_t)> prune_request;
+    /// Optional: called once per client that is still PENDING when this fan-out is
+    /// finalized (deadline expired with no ack — including one that was never even
+    /// sent). Lets a caller with its own, separate completion-tracking (the state
+    /// fan-out's completion_tracker_) learn "this client will never answer" promptly
+    /// instead of independently riding out its own, usually much longer, timeout.
+    /// Unused (nullptr) by mode fan-out, which has no such separate tracker.
+    std::function<void(const std::string &)> on_client_failed;
     bool finalized{false};
   };
 
   std::mutex fanouts_mutex_;   // guards active_fanouts_ and every ClientFanout's fields
+  std::condition_variable fanouts_cv_;   // notified whenever any ClientFanout's clients map changes
   std::vector<std::shared_ptr<ClientFanout>> active_fanouts_;
+
+  /// The detached mode-fan-out threads currently inside this object, and the flag that tells them
+  /// to stop waiting and go home. Drained by shutdown(); see it for why.
+  packml_ros::DetachedWorkerGate mode_fanout_workers_;
+  std::atomic<bool> mode_fanout_shutting_down_{false};
+  /// Mirrors CompletionTracker's own round counter so "am I still the live round?" is answerable
+  /// from a callback without locking the tracker (and when there is no tracker). Written only by
+  /// fanout_state_transition() on the Qt thread; read from ROS executor callbacks and retry
+  /// closures, hence atomic.
+  std::shared_ptr<std::atomic<uint64_t>> state_fanout_round_ =
+    std::make_shared<std::atomic<uint64_t>>(0);
   std::mutex status_publish_mutex_;  // see publish_status()
 
-  // DESTRUCTION ORDER IS LOAD-BEARING: sm_ must stay the LAST declared data member
-  // of this class. Members are destroyed in reverse declaration order, and
-  // ~StateMachine synchronously stops the Qt state-machine thread and drains its
-  // callbacks — the on_state_changed callback (Qt thread) touches the fan-out,
-  // status, and health members of this class, so the state machine must be torn
-  // down FIRST, while everything the callback uses is still alive. Declare any
-  // new data member ABOVE this line.
+  /// DESTRUCTION ORDER IS LOAD-BEARING: sm_ must stay the LAST declared data member
+  /// of this class. Members are destroyed in reverse declaration order, and
+  /// ~StateMachine synchronously stops the Qt state-machine thread and drains its
+  /// callbacks — the on_state_changed callback (Qt thread) touches the fan-out,
+  /// status, and health members of this class, so the state machine must be torn
+  /// down FIRST, while everything the callback uses is still alive. Declare any
+  /// new data member ABOVE this line.
   std::shared_ptr<packml_sm::StateMachine> sm_;
 
   /// Surface one client's fan-out failure out-of-band: an event-style WARN Alarm on
@@ -483,6 +992,293 @@ protected:
     ev.is_timeout = false;
     ev.message    = "Equipment Module did not acknowledge " + kind + " transition: " + reason;
     on_alarm_event(ev);
+  }
+
+  // -------------------------------------------------------------------------
+  // State-transition action fan-out
+  // -------------------------------------------------------------------------
+  // Deliberately NOT built on the generic ClientFanout/fanout_transition_to_clients<T>
+  // machinery above (still used for mode changes): the state transition is an ACTION, whose
+  // RESULT feeds completion_tracker_ directly rather than a WARN-alarm-on-timeout tracker,
+  // since a coordinated completion failure already drives the state machine to ABORTING via
+  // ErrorEvent — a much stronger, more visible signal than a log-only alarm.
+
+  using StateTransitionAction = packml_msgs::action::StateTransition;
+  using StateClientGoalHandle = rclcpp_action::ClientGoalHandle<StateTransitionAction>;
+
+  /// Fan out a state-transition ACTION goal to every registered client, feeding
+  /// completion_tracker_ so the setStateOperation-bound function (see init()) can wait for
+  /// every node's real completion.
+  ///
+  /// Blocks the calling (Qt state-machine) thread BRIEFLY, bounded by kAcceptanceWaitMs, for
+  /// every client's goal to be ACCEPTED (each node's own handle_goal decision — a fast, local
+  /// check, not the node's actual acting-state work) before returning. This is a real fix, not
+  /// just a style choice: this manager fans out BEFORE publishing packml_status specifically
+  /// so a node sees "you are being asked to transition" before "the machine is now in that
+  /// state" — an node that saw status FIRST hits its own already_there shortcut and skips
+  /// on_state_trans_req()/defers_completion() entirely. An action's goal-request/response
+  /// handshake has measurably more overhead than a single topic publish, so without this wait
+  /// the status topic can consistently win that race even though the fan-out is issued first
+  /// in program order — silently defeating defers_completion() for every node, every time.
+  /// Waiting only for ACCEPTANCE (not the full, potentially-deferred completion) keeps this
+  /// bounded and fast — nothing like the old, deliberately-removed multi-second wait for full
+  /// acknowledgement; an unresponsive node simply falls back to today's best-effort ordering
+  /// once the short bound elapses, rather than stalling the machine.
+  /// Attempt one client's state-transition goal send for the current fan-out round.
+  /// Returns false if the client's action server is not yet discovered — mirroring
+  /// try_send_to_client<T>()'s discovery-retry contract for mode fan-out, this closure is
+  /// then kept in `fanout->unsent_` and retried on every check_fanout_deadlines() tick until
+  /// the server appears or the fan-out deadline expires. Prior to this, an EM whose action
+  /// server was not yet discoverable at fan-out time (e.g. mid-startup, or mid-restart) got
+  /// no goal at all, ever — no retry, no failure signal — and would silently ride out the
+  /// whole, separate state_complete_timeout_ms with completion_tracker_ waiting on a node
+  /// that was never actually asked.
+  ///
+  /// On a successful send, marks the client ACKED in `fanout` — meaning only "the goal was
+  /// handed to the middleware", not "the node answered"; actual completion is entirely
+  /// completion_tracker_'s job via the goal-response/result callbacks installed here (the
+  /// same ones fanout_state_transition() always installed).
+  /// `round` identifies the fan-out round this send belongs to; every callback installed below
+  /// carries it so a late answer from a superseded round cannot be mistaken for an answer to
+  /// the live one. See CompletionTracker::begin_round() for why the id is required.
+  bool try_send_state_goal(
+    const std::shared_ptr<ClientFanout> & fanout,
+    const std::string & name,
+    const std::shared_ptr<PackmlClientInterface> & client,
+    const StateTransitionAction::Goal & goal,
+    const std::shared_ptr<std::atomic<size_t>> & pending_acceptance,
+    const std::shared_ptr<std::condition_variable> & acceptance_cv,
+    const std::shared_ptr<std::mutex> & acceptance_mutex,
+    uint64_t round)
+  {
+    if (!client->state_tr_client->action_server_is_ready()) {
+      return false;
+    }
+    typename rclcpp_action::Client<StateTransitionAction>::SendGoalOptions options;
+    options.goal_response_callback =
+      [this, name, pending_acceptance, acceptance_cv, acceptance_mutex, round,
+        round_counter = state_fanout_round_](
+        StateClientGoalHandle::SharedPtr handle) {
+        {
+          std::lock_guard<std::mutex> lk(*acceptance_mutex);
+          pending_acceptance->fetch_sub(1);
+        }
+        acceptance_cv->notify_all();
+        if (!handle) {
+          report_fanout_failure(kStateFanoutKind, name, "goal rejected by node");
+          if (completion_tracker_) {
+            completion_tracker_->on_goal_rejected(name, "goal rejected by node", round);
+          }
+          return;
+        }
+        {
+          std::lock_guard<std::mutex> lk(active_state_goals_mutex_);
+          // Only the live round may install a handle. A superseded round's acceptance
+          // arriving now would otherwise overwrite the current round's handle for this
+          // node, and cancel_pending_state_goals() would then cancel the wrong goal.
+          if (round == round_counter->load()) {
+            active_state_goals_[name] = handle;
+          }
+        }
+        if (completion_tracker_) {
+          completion_tracker_->on_goal_accepted(name, handle->get_goal_id(), round);
+        }
+      };
+    options.result_callback =
+      [this, name, round, round_counter = state_fanout_round_](
+        const StateClientGoalHandle::WrappedResult & wrapped) {
+        const bool success = wrapped.code == rclcpp_action::ResultCode::SUCCEEDED &&
+          wrapped.result && wrapped.result->success;
+        const int32_t error_code = wrapped.result ? wrapped.result->error_code : 0;
+        const std::string message = wrapped.result ? wrapped.result->message : std::string();
+        if (!success) {
+          report_fanout_failure(
+            kStateFanoutKind, name,
+            "result code " + std::to_string(static_cast<int>(wrapped.code)) + ": " + message);
+        } else {
+          RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"),
+            name << " completed state transition");
+        }
+        if (completion_tracker_) {
+          completion_tracker_->on_result(
+            name, wrapped.goal_id, success, error_code, message, round);
+        }
+        std::lock_guard<std::mutex> lk(active_state_goals_mutex_);
+        // Same reasoning as the acceptance path: a stale result's unconditional erase(name)
+        // would remove the CURRENT round's handle, after which cancel_pending_state_goals()
+        // silently cancels nothing for that node.
+        if (round == round_counter->load()) {
+          active_state_goals_.erase(name);
+        }
+      };
+    client->state_tr_client->async_send_goal(goal, options);
+    bool all_acked = false;
+    {
+      std::lock_guard<std::mutex> lk(fanouts_mutex_);
+      if (!fanout->finalized) {
+        fanout->clients[name] = ClientFanout::ClientStatus::ACKED;
+        // Finalize as soon as every client has been sent to, rather than always sitting out
+        // the full 5s deadline. Without this a state fan-out occupied active_fanouts_ for 5s
+        // regardless of how fast every node answered -- and since a fan-out happens on EVERY
+        // state change, a machine self-cycling in EXECUTE kept ~25 live fan-outs at all times,
+        // each replaying its own retry closures on every 200ms tick.
+        all_acked = fanout->unsent_.empty() &&
+          std::none_of(fanout->clients.begin(), fanout->clients.end(),
+            [](const auto & e) {return e.second == ClientFanout::ClientStatus::PENDING;});
+      }
+    }
+    fanouts_cv_.notify_all();
+    if (all_acked) {
+      finalize_fanout(fanout);
+    }
+    return true;
+  }
+
+  void fanout_state_transition(packml_sm::State state)
+  {
+    std::vector<std::string> names;
+    names.reserve(client_map_.size());
+    for (const auto & [name, client] : client_map_) {
+      (void)client;
+      names.push_back(name);
+    }
+
+    // One monotonic identity for this round, shared by the tracker, this fan-out object and
+    // every callback and retry closure installed below. state_fanout_round_ mirrors the
+    // tracker's own counter so the currency check stays available even where the tracker is
+    // not consulted (and when there is no tracker at all).
+    const uint64_t round = completion_tracker_
+      ? completion_tracker_->begin_round(names)
+      : state_fanout_round_->load() + 1;
+    state_fanout_round_->store(round);
+
+    // Retire any state fan-out from a previous round BEFORE this one starts. Their deadlines
+    // would otherwise expire later and call on_client_failed against a round that no longer
+    // exists -- the round check in the tracker now rejects that, but leaving zombie fan-outs
+    // alive also means their retry closures keep re-sending a dead round's goal on every tick.
+    // Retired quietly: a superseded round has no one left to report to.
+    {
+      std::vector<std::shared_ptr<ClientFanout>> superseded;
+      {
+        std::lock_guard<std::mutex> lk(fanouts_mutex_);
+        for (const auto & existing : active_fanouts_) {
+          if (existing->kind == kStateFanoutKind && !existing->finalized &&
+            existing->round != round)
+          {
+            existing->on_client_failed = nullptr;  // nothing to report; the round is gone
+            superseded.push_back(existing);
+          }
+        }
+      }
+      for (const auto & existing : superseded) {
+        finalize_fanout(existing);
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lk(active_state_goals_mutex_);
+      active_state_goals_.clear();
+    }
+
+    if (client_map_.empty()) {
+      return;
+    }
+
+    StateTransitionAction::Goal goal;
+    goal.state.val = static_cast<int8_t>(state);
+
+    auto pending_acceptance = std::make_shared<std::atomic<size_t>>(client_map_.size());
+    auto acceptance_cv = std::make_shared<std::condition_variable>();
+    auto acceptance_mutex = std::make_shared<std::mutex>();
+
+    // Tracks send (not completion) per client for this round, purely to drive the
+    // discovery-retry below — completion stays entirely completion_tracker_'s job. A
+    // client still PENDING when this fan-out's own 5s deadline expires never got its goal
+    // sent at all; completion_tracker_ is told immediately (on_client_failed) so its own,
+    // separate and much longer state_complete_timeout_ms wait doesn't have to find out the
+    // slow way.
+    auto fanout = std::make_shared<ClientFanout>();
+    fanout->kind = kStateFanoutKind;
+    fanout->round = round;
+    fanout->deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    // Captures `round` so an expiry that lands after this round has been superseded is
+    // rejected by the tracker instead of failing whatever round is live: this fan-out's 5s
+    // deadline is far shorter than the round's completion budget, so it routinely outlives it.
+    fanout->on_client_failed = [this, round](const std::string & name) {
+        if (completion_tracker_) {
+          completion_tracker_->on_goal_rejected(
+            name, "action server not available for the entire fan-out deadline", round);
+        }
+      };
+    {
+      std::lock_guard<std::mutex> lk(fanouts_mutex_);
+      for (const auto & name : names) {
+        fanout->clients[name] = ClientFanout::ClientStatus::PENDING;
+      }
+      active_fanouts_.push_back(fanout);
+    }
+
+    for (const auto & [name, client] : client_map_) {
+      if (!try_send_state_goal(
+          fanout, name, client, goal, pending_acceptance, acceptance_cv, acceptance_mutex, round))
+      {
+        std::lock_guard<std::mutex> lk(fanouts_mutex_);
+        if (!fanout->finalized) {
+          fanout->unsent_[name] = [this, fanout, name, client, goal,
+            pending_acceptance, acceptance_cv, acceptance_mutex, round,
+            round_counter = state_fanout_round_]() {
+              // A retry must never send a superseded round's goal. Without this check a
+              // late-discovered node received a burst of stale commands naming states the
+              // machine had already left -- observed as two goals 1.24ms apart, the first for
+              // a state abandoned 1.6s earlier.
+              if (round != round_counter->load()) {
+                return true;  // treat as handled so it stops being retried
+              }
+              return try_send_state_goal(
+                fanout, name, client, goal, pending_acceptance, acceptance_cv, acceptance_mutex,
+                round);
+            };
+        }
+      }
+    }
+
+    // Bounded wait for acceptance — see this method's own doc comment for why. The ROS
+    // executor thread (separate from this Qt thread) keeps servicing the goal-response
+    // callbacks above while this thread blocks here, exactly like CompletionTracker's own
+    // cross-thread bridge. A client still undiscovered at this point never decrements
+    // pending_acceptance, so this simply rides out the full bound — the same outcome as an
+    // accepted-but-silent node already produced before this method had any retry at all.
+    static constexpr auto kAcceptanceWaitMs = std::chrono::milliseconds(200);
+    std::unique_lock<std::mutex> lk(*acceptance_mutex);
+    acceptance_cv->wait_for(
+      lk, kAcceptanceWaitMs, [pending_acceptance] { return pending_acceptance->load() == 0; });
+  }
+
+  /// Cancel every still-outstanding state-transition goal from the current round — called
+  /// whenever completion_tracker_->wait_for_all() ends the wait early for a reason that
+  /// leaves OTHER nodes still pending (TIMEOUT, FAILED, or ABORTED_BY_HEALTH; never COMPLETE
+  /// or SHUTDOWN, see setStateOperation's binding above), so a coordinated node that never
+  /// answered is told honestly to stop rather than being silently abandoned mid-goal to ride
+  /// out its own, potentially much longer, deferred_completion_timeout_ms independently.
+  /// pending_nodes() naturally excludes whichever node actually triggered the early exit (it
+  /// already has a result, by definition), so only genuinely still-outstanding goals are
+  /// touched.
+  void cancel_pending_state_goals()
+  {
+    if (!completion_tracker_) {
+      return;
+    }
+    const auto pending = completion_tracker_->pending_nodes();
+    std::lock_guard<std::mutex> lk(active_state_goals_mutex_);
+    for (const auto & name : pending) {
+      auto goal_it = active_state_goals_.find(name);
+      if (goal_it == active_state_goals_.end()) {
+        continue;  // never got as far as an accepted goal handle
+      }
+      auto client_it = client_map_.find(name);
+      if (client_it != client_map_.end()) {
+        client_it->second->state_tr_client->async_cancel_goal(goal_it->second);
+      }
+    }
   }
 
   /// Finalize a fan-out: clients still PENDING are failed (deadline expired), their
@@ -528,9 +1324,15 @@ protected:
         fanout->prune_request(name, request_id);
       }
       report_fanout_failure(fanout->kind, name, "no response within the fan-out deadline");
+      if (fanout->on_client_failed) {
+        fanout->on_client_failed(name);
+      }
     }
     for (const auto & name : undiscovered) {
       report_fanout_failure(fanout->kind, name, "service unavailable for the entire fan-out deadline");
+      if (fanout->on_client_failed) {
+        fanout->on_client_failed(name);
+      }
     }
     if (acked == total) {
       RCLCPP_INFO(rclcpp::get_logger("packml_ros"),
@@ -589,14 +1391,18 @@ protected:
   /// stays silent past the deadline is surfaced out-of-band via WARN log + WARN Alarm.
   /// A failed fan-out does NOT roll back the machine state: the state machine is the
   /// source of truth and the manager's status has already been published.
+  ///
+  /// Returns the ClientFanout tracker so the caller can (optionally, briefly) wait for
+  /// initial acknowledgement before publishing status — see on_change_mode() for why
+  /// that ordering matters (the same race documented on fanout_state_transition()).
   template <typename T>
-  void fanout_transition_to_clients(
+  std::shared_ptr<ClientFanout> fanout_transition_to_clients(
     const std::string & kind,
     std::function<typename rclcpp::Client<T>::SharedPtr(std::shared_ptr<PackmlClientInterface>)> get_client,
     typename T::Request::SharedPtr request)
   {
     if (client_map_.empty()) {
-      return;
+      return nullptr;
     }
 
     auto fanout = std::make_shared<ClientFanout>();
@@ -639,6 +1445,7 @@ protected:
         }
       }
     }
+    return fanout;
   }
 
   /// Attempt one client's send. Returns false if the service is not yet discovered
@@ -671,6 +1478,7 @@ protected:
           complete = std::none_of(fanout->clients.begin(), fanout->clients.end(),
             [](const auto & entry) {return entry.second == ClientFanout::ClientStatus::PENDING;});
         }
+        fanouts_cv_.notify_all();
         if (response->success) {
           RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"),
             name << " acknowledged " << fanout->kind << " transition");
@@ -743,10 +1551,48 @@ private:
 std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
         std::shared_ptr<packml_msgs::srv::ModeChange::Response> res) {
 
-      // TODO: make mapping between packml_msgs::msg::Mode constant declarations and packml_sm::Mode
-      switching_mode = static_cast<packml_sm::ModeType>(req->mode.val);
+      // Reject a mode nobody declared, before it touches the state machine.
+      //
+      // Nothing else on this path can: ModeType is a bare int, mode_switcher() checks only that
+      // the CURRENT STATE permits switching and never that the mode exists, and the
+      // single-argument changeMode() builds an ALL-STATES-AVAILABLE mask for whatever number it
+      // is handed. So an unrecognised value was not merely accepted and fanned out to every
+      // equipment module as an approved switch -- it arrived with no state mask at all, silently
+      // removing every command restriction the configured modes impose until the next valid mode
+      // change. A masked state that correctly refuses a command in Production would accept it.
+      //
+      // The generated mode set is the authority for whether a mode EXISTS (is_known_mode(), from
+      // default_modes.hpp). Deliberately not mode_masks_: that table says which states a mode
+      // allows, and a declared mode with no configured mask is legitimate -- it means fully open,
+      // which is the documented fail-open behaviour below.
+      const auto requested_mode = static_cast<packml_sm::ModeType>(req->mode.val);
+      if (!packml_sm::is_known_mode(requested_mode)) {
+        // static_cast<int>: mode.val is int8_t, which streams as a CHARACTER -- 99 logged as 'c'
+        // and -1 as a stray byte before this cast.
+        RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"),
+          "Rejected mode change to " << static_cast<int>(req->mode.val) <<
+            ": not a mode this deployment declares");
+        res->success = false;
+        res->error_code = res->INVALID_MODE_REQUEST;
+        res->message = "Unknown mode " + std::to_string(req->mode.val) +
+          "; declared modes come from the generated default_modes.hpp";
+        return;
+      }
 
-      auto change_result = sm_->changeMode(switching_mode);
+      // TODO: make mapping between packml_msgs::msg::Mode constant declarations and packml_sm::Mode
+      switching_mode = requested_mode;
+
+      // Apply this mode's CONFIGURED state mask if the deployment declared one.
+      //
+      // The single-argument changeMode() must NOT be used here: it builds an all-states-available
+      // mask for whatever value it is given (state_machine.cpp), which would replace the mask
+      // parsed from modes_config_file with a fully-open one and never restore it. Machine
+      // behaviour would then depend on HOW a mode was set (boot vs. ~/changeMode) rather than on
+      // which mode it was. The parsed table is owned by this class instead -- see mode_masks_.
+      const auto mask_it = mode_masks_.find(switching_mode);
+      auto change_result = (mask_it != mode_masks_.end())
+        ? sm_->changeMode(switching_mode, mask_it->second)
+        : sm_->changeMode(switching_mode);
 
       if (!change_result.has_value()) {
         res->success = false;
@@ -764,32 +1610,128 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
       // reported failure for a mode the state machine had already switched.)
       current_mode.store(switching_mode);
 
-      // Fan out BEFORE publishing status, for the same reason as the state path
-      // (see on_state_changed in packml_ros-new.hpp): an EM that sees the new mode
-      // on the latched status topic first would "already there"-shortcut the
-      // transition request and skip its on_mode_trans_req() hook.
+      // Fan out and publish status on their own thread, not this callback's own ROS
+      // executor thread: an EM that sees the new mode on the latched status topic
+      // before its own mode-transition request arrives would "already there"-
+      // shortcut past on_mode_trans_req(), the same race fanout_state_transition()
+      // already guards against for state (see its own comment). Waiting for that
+      // ordering INSIDE this callback would deadlock a single-threaded executor,
+      // since the mode-transition response the wait needs is itself delivered by
+      // this same thread. So, like wait_for_deferred_completion() on the Equipment
+      // Module side, the wait (and the status publish it guards) runs on its own
+      // detached thread instead — bounded to a short grace window, acceptable here
+      // since mode changes are rare, operator-driven actions rather than a hot path
+      // (unlike state transitions, which the Qt-thread wait keeps responsive for).
       auto request = std::make_shared<packml_msgs::srv::ModeTransition::Request>();
       request->mode = req->mode;
-      fanout_transition_to_clients<packml_msgs::srv::ModeTransition>(
-        kModeFanoutKind, &PackmlManagerInterface::get_mode_client, request);
+      // Counted BEFORE the spawn (see DetachedWorkerGate::enter) so shutdown() cannot slip
+      // between creating this thread and knowing about it.
+      mode_fanout_workers_.enter();
+      std::thread([this, request]() {
+          packml_ros::DetachedWorkerGate::Scope worker_scope(mode_fanout_workers_);
 
-      publish_status();
+          auto fanout = fanout_transition_to_clients<packml_msgs::srv::ModeTransition>(
+            kModeFanoutKind, &PackmlManagerInterface::get_mode_client, request);
+
+          if (fanout) {
+            static constexpr auto kAcceptanceWaitMs = std::chrono::milliseconds(200);
+            std::unique_lock<std::mutex> lk(fanouts_mutex_);
+            fanouts_cv_.wait_for(
+              lk, kAcceptanceWaitMs,
+              [this, &fanout] {
+                return mode_fanout_shutting_down_.load() ||
+                  std::none_of(fanout->clients.begin(), fanout->clients.end(),
+                  [](const auto & entry) {return entry.second == ClientFanout::ClientStatus::PENDING;});
+              });
+          }
+
+          // Nothing to publish on the way out the door, and status_pub_ is about to go: the
+          // manager is being torn down, so this thread's only remaining job is to leave.
+          if (mode_fanout_shutting_down_.load()) {
+            return;
+          }
+          publish_status();
+        }).detach();
 
       res->success = true;
       res->error_code = res->SUCCESS;
   };
 
-  void on_change_state(packml_msgs::srv::StateChange::Request::SharedPtr req, packml_msgs::srv::StateChange::Response::SharedPtr res) {
-    std::string error_message;
+  /// Take a ~/changeState request off the wire and hand it to the command worker, without
+  /// evaluating it here.
+  ///
+  /// Evaluating it here silently loses commands. `evaluate_state_change()` below blocks in
+  /// `sm_->changeState()` until the Qt event loop answers the command -- deliberately unbounded (see
+  /// `StateMachine::postCommand()`: the command stays queued and still takes effect, so a wall-clock
+  /// false would be a lie). An executor thread parked in that wait takes nothing else off the wire,
+  /// and the service's reader queue is a RELIABLE KEEP_LAST depth-10 default nobody chose: requests
+  /// past ~10 deep are OVERWRITTEN. Not rejected -- overwritten, so no response is ever sent and
+  /// the caller's future never resolves.
+  ///
+  /// Silence is the part that matters. An operator mashing recovery buttons has no way to tell a
+  /// command that was refused from one that was discarded, and the discarded one leaves the machine
+  /// somewhere they did not ask for. A deeper queue only moves the depth at which that starts.
+  ///
+  /// Returning immediately keeps the reader queue draining, so every request reaches the worker and
+  /// every request gets an answer. The response is deferred, not skipped: rclcpp's
+  /// defer-response callback form hands us the service and the request id, and the worker sends the
+  /// real accepted/rejected answer through them once the machine has actually answered. Nothing is
+  /// predicted or guessed -- the client still learns the true outcome, just not on this thread.
+  void on_change_state(
+    std::shared_ptr<rclcpp::Service<packml_msgs::srv::StateChange>> service,
+    std::shared_ptr<rmw_request_id_t> request_id,
+    packml_msgs::srv::StateChange::Request::SharedPtr req)
+  {
+    size_t depth = 0;
+    {
+      std::lock_guard<std::mutex> lk(command_queue_mutex_);
+      if (command_worker_stopping_) {
+        // Answer rather than drop: this is the one path that cannot wait for the worker.
+        packml_msgs::srv::StateChange::Response res;
+        res.success = false;
+        res.error_code = res.INVALID_TRANSITION_REQUEST;
+        res.message = "Manager is shutting down; command not evaluated";
+        send_command_response(service, *request_id, res);
+        return;
+      }
+      // Mapped here rather than in the worker: it is a pure lookup whose answer cannot change while
+      // the command waits, unlike the health gate and current-state checks the worker keeps.
+      command_queue_.push_back(
+        {std::move(service), std::move(request_id), packml_ros::to_transition_cmd(req->command)});
+      depth = command_queue_.size();
+    }
+    command_queue_cv_.notify_one();
 
-    auto command = packml_ros::to_transition_cmd(req->command);
+    // The queue is deliberately unbounded -- a bound would put back the thing being removed, a
+    // depth at which commands stop being answered. What it cannot hide is that a backlog means
+    // commands are being applied well after they were issued, so say so where an operator's log
+    // will show it.
+    if (depth > kCommandBacklogWarnDepth) {
+      RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"),
+        "State-command backlog is " << depth << " deep: commands are being answered slower than "
+        "they arrive, so each one now takes effect noticeably later than it was issued");
+    }
+  }
+
+  /// Evaluate one command against the state machine and build its response. Runs on the command
+  /// worker thread, never on a ROS executor thread.
+  ///
+  /// The health gate and current-state checks are evaluated HERE rather than at arrival, so a
+  /// command is judged against the machine as it is when the machine actually acts on it. For a
+  /// command that sat in the queue behind a slow transition, arrival-time answers would be about a
+  /// machine that has since moved on.
+  packml_msgs::srv::StateChange::Response evaluate_state_change(packml_sm::TransitionCmd command)
+  {
+    packml_msgs::srv::StateChange::Response response;
+    packml_msgs::srv::StateChange::Response * res = &response;
+    std::string error_message;
 
     if (command == packml_sm::TransitionCmd::NO_COMMAND) {
       error_message =  "Unrecognized transition request command: " + to_string(command);
       res->success = false;
       res->error_code = res->UNRECOGNIZED_REQUEST;
       res->message = error_message;
-      return;
+      return response;
     }
 
     // Health gate: block RESET from STOPPED if any required Equipment Module
@@ -812,7 +1754,7 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
         res->success = false;
         res->error_code = res->INVALID_TRANSITION_REQUEST;
         res->message = error_message;
-        return;
+        return response;
       }
     }
 
@@ -827,11 +1769,65 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
       // Per StateChange.srv, the response means the request was *accepted*, not that
       // the transition has completed. The Qt state machine runs on its own thread and
       // applies the transition asynchronously; clients await the outcome on the
-      // packml_status topic. (Previously this blocked on a reused single-shot
-      // std::promise — racy, and it starved the single-threaded executor's heartbeat
-      // and timeout callbacks for the duration of every transition.)
+      // packml_status topic. Blocking here for the real outcome would starve the
+      // single-threaded executor's heartbeat and timeout callbacks for the duration
+      // of every transition.
       res->success = true;
       res->error_code = res->SUCCESS;
+    }
+    return response;
+  }
+
+  /// One thread, strictly FIFO, for every ~/changeState command.
+  ///
+  /// One rather than a pool because the order commands are evaluated in is the order the operator
+  /// issued them. HOLD then UNHOLD is not the same instruction as UNHOLD then HOLD, and a pool
+  /// would let the second overtake the first whenever the first happens to take longer.
+  void run_command_worker()
+  {
+    for (;;) {
+      QueuedCommand queued;
+      {
+        std::unique_lock<std::mutex> lk(command_queue_mutex_);
+        command_queue_cv_.wait(
+          lk, [this] {return !command_queue_.empty() || command_worker_stopping_;});
+
+        if (command_worker_stopping_) {
+          // Answer everything still owed, then leave. Deliberately NOT evaluated: the machine is
+          // being torn down, so a refusal naming that is more honest than an answer about a
+          // machine that is going away -- and it keeps teardown bounded by at most the one
+          // command already inside evaluate_state_change(), rather than by the whole backlog.
+          auto owed = std::move(command_queue_);
+          command_queue_.clear();
+          lk.unlock();
+          for (auto & abandoned : owed) {
+            if (nullptr == abandoned.service) {
+              continue;   // health-raised: nobody is waiting for an answer
+            }
+            packml_msgs::srv::StateChange::Response res;
+            res.success = false;
+            res.error_code = res.INVALID_TRANSITION_REQUEST;
+            res.message = "Manager is shutting down; command not evaluated";
+            send_command_response(abandoned.service, *abandoned.request_id, res);
+          }
+          return;
+        }
+
+        queued = std::move(command_queue_.front());
+        command_queue_.pop_front();
+      }
+
+      auto response = evaluate_state_change(queued.command);
+      if (nullptr != queued.service) {
+        send_command_response(queued.service, *queued.request_id, response);
+      } else if (!response.success) {
+        // A health-raised action the machine will not take from where it currently is (HOLD while
+        // STOPPED, ABORT while already ABORTED) is the expected case, not a fault: the monitor asks
+        // and the machine decides. See fire_packml_action().
+        RCLCPP_DEBUG_STREAM(rclcpp::get_logger("packml_ros"),
+          "[HealthMonitor] queued action not applicable from the current state: " <<
+            response.message);
+      }
     }
   }
 
@@ -1002,22 +1998,47 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
         return;
     }
 
-    // The state machine is the single source of truth for transition legality:
-    // attempt the command and let the SM reject it if it isn't valid from the
-    // current state (e.g. HOLD/SUSPEND while STOPPED, or ABORT while already
-    // ABORTED). HealthMonitor only calls this on NEW/escalating events (repeats
-    // are suppressed upstream), so there is no per-tick spam, and a rejection is
-    // expected — logged at DEBUG rather than re-encoding the SM's rules here.
-    auto result = sm_->changeState(cmd);
-    if (result.has_value()) {
-      RCLCPP_WARN(rclcpp::get_logger("packml_ros"),
-        "[HealthMonitor] Fired PackML action %d from Equipment Module health event",
-        health_action);
-    } else {
-      RCLCPP_DEBUG_STREAM(rclcpp::get_logger("packml_ros"),
-        "[HealthMonitor] action " << health_action
-          << " not applicable from current state: " << result.error());
+    // Wake any in-flight CompletionTracker wait immediately: a health-triggered action can
+    // make a node newly unhealthy, and the wait's own predicate re-checks health on every
+    // wakeup — no need to wait for the condition variable's next natural wakeup (an action
+    // result or the timeout) to notice.
+    if (completion_tracker_) {
+      completion_tracker_->notify_health_change();
     }
+
+    // Queued for the command worker, NOT applied here. sm_->changeState() blocks until the Qt event
+    // loop answers, which is as long as the transition in progress takes; this runs on the ROS
+    // executor thread (HealthMonitor calls fire_action_ straight out of on_heartbeat() and
+    // check_timeouts()), and an executor parked there takes nothing else off the wire for the
+    // duration — no operator command, no heartbeat, no alarm. That is the same starvation
+    // on_change_state() exists to avoid, and the worker already evaluates a command against the
+    // machine as it is when it acts, which for a health event is the honest moment.
+    //
+    // The state machine stays the single source of truth for legality: the command is offered and
+    // the machine rejects it if it is not valid from where it is (HOLD/SUSPEND while STOPPED, ABORT
+    // while already ABORTED). See run_command_worker() for where that rejection is reported.
+    {
+      std::lock_guard<std::mutex> lk(command_queue_mutex_);
+      if (command_worker_stopping_) {
+        return;
+      }
+      // check_timeouts() re-raises ABORT on every tick while a node stays timed out, so without
+      // this an unreachable machine accumulates one queued action every 200 ms. Collapsing them is
+      // exact rather than approximate: the actions are identical and none carries a response.
+      const bool already_queued = std::any_of(command_queue_.begin(), command_queue_.end(),
+        [cmd](const QueuedCommand & queued) {
+          return nullptr == queued.service && queued.command == cmd;
+        });
+      if (already_queued) {
+        return;
+      }
+      command_queue_.push_back({nullptr, nullptr, cmd});
+    }
+    command_queue_cv_.notify_one();
+
+    RCLCPP_WARN(rclcpp::get_logger("packml_ros"),
+      "[HealthMonitor] Raised PackML action %d from Equipment Module health event",
+      health_action);
   }
 
 protected:
@@ -1031,6 +2052,67 @@ protected:
     if (health_monitor_) {
       health_monitor_->rearm_timed_out_nodes();
     }
+  }
+
+  /// Wake any in-flight CompletionTracker wait immediately. MUST be called as the
+  /// FIRST statement of the derived manager's destructor body (e.g.
+  /// SMNode_new::~SMNode_new()), before the StateMachine shared_ptr chain that
+  /// owns sm_ starts unwinding — StateMachine::drainActingStates() (called from
+  /// ~StateMachine()) blocks on any bound acting-state operation with NO internal
+  /// timeout, so an in-flight completion wait would otherwise stall process
+  /// teardown for up to state_complete_timeout_ms.
+  void shutdown()
+  {
+    if (completion_tracker_) {
+      completion_tracker_->request_shutdown();
+    }
+
+    // The MODE side needs this drain as much as the state side does: on_change_mode() detaches one
+    // thread per request, and that thread uses this object through a fan-out and an up-to-200 ms
+    // wait before publishing status. A manager destroyed inside that window -- an operator mode
+    // change shortly before a launch shutdown or a Ctrl-C -- leaves a live thread in freed memory.
+    //
+    // Flag first so a waiting thread gives up now rather than riding out its wait, notify to wake
+    // it, then hold here until it has actually left.
+    mode_fanout_shutting_down_.store(true);
+    fanouts_cv_.notify_all();
+    mode_fanout_workers_.await_idle();
+
+    // The command worker holds a raw `this` and answers requests through the service, so it has to
+    // be gone before either is. Stopping it also answers whatever is still queued -- see
+    // run_command_worker() -- so a client waiting on a command that arrived just before teardown
+    // gets a refusal instead of a future that never resolves.
+    {
+      std::lock_guard<std::mutex> lk(command_queue_mutex_);
+      command_worker_stopping_ = true;
+    }
+    command_queue_cv_.notify_all();
+    if (command_worker_.joinable()) {
+      command_worker_.join();
+    }
+  }
+
+  /// Backstop for the derived destructor's shutdown() call, NOT a replacement for it.
+  ///
+  /// The derived class must still call shutdown() first, because by the time this runs the derived
+  /// part is already gone and anything the worker might have needed from it is unreachable. What
+  /// this covers is the case where the derived destructor never runs at all: a throw anywhere
+  /// between init() starting command_worker_ and the end of the derived constructor destroys a
+  /// partially-constructed object, so ~PackmlManagerInterface is reached but ~SMNode_new is not.
+  /// Without a join here that path met ~std::thread on a joinable thread, and std::terminate ends
+  /// the process. It is reachable from an ordinary mistake, not just an exotic one -- a bad value
+  /// for a declared parameter throws out of init(), and SMNode_new throws deliberately when
+  /// activate() fails -- so a launch-file typo aborted instead of reporting itself.
+  ///
+  /// shutdown() is safe to run twice (the flags are already set, the thread is no longer joinable,
+  /// the gate is already idle) and safe to run when init() never got far enough to start anything.
+  ///
+  /// Protected and non-virtual on purpose. Nothing deletes a manager through a base pointer --
+  /// SMNode_new inherits privately -- so protected is what enforces that, and this is the class's
+  /// only virtual candidate, so declaring it virtual would add a vtable for nothing.
+  ~PackmlManagerInterface()
+  {
+    shutdown();
   }
 
   void init(rclcpp::Node::SharedPtr node, std::shared_ptr<packml_sm::StateMachine> sm) {
@@ -1056,7 +2138,18 @@ protected:
     }
 
     mode_server_ = node->create_service<packml_msgs::srv::ModeChange>("~/" + std::string(packml_ros::kChangeModeService), [this](const std::shared_ptr<packml_msgs::srv::ModeChange::Request>& req, const std::shared_ptr<packml_msgs::srv::ModeChange::Response>& res){on_change_mode(req, res); });
-    state_server_ = node->create_service<packml_msgs::srv::StateChange>("~/" + std::string(packml_ros::kChangeStateService), [this](const std::shared_ptr<packml_msgs::srv::StateChange::Request>& req, const std::shared_ptr<packml_msgs::srv::StateChange::Response>& res){on_change_state(req, res); });
+    // Defer-response form: the callback returns without an answer and the command worker sends it
+    // once the machine has really answered. See on_change_state() for the commands this lost when
+    // the answer was produced inline on the executor thread.
+    state_server_ = node->create_service<packml_msgs::srv::StateChange>(
+      "~/" + std::string(packml_ros::kChangeStateService),
+      [this](
+        std::shared_ptr<rclcpp::Service<packml_msgs::srv::StateChange>> service,
+        std::shared_ptr<rmw_request_id_t> request_id,
+        packml_msgs::srv::StateChange::Request::SharedPtr req) {
+        on_change_state(std::move(service), std::move(request_id), std::move(req));
+      });
+    command_worker_ = std::thread(&PackmlManagerInterface::run_command_worker, this);
     status_server_ = node->create_service<packml_msgs::srv::AllStatus>("~/" + std::string(packml_ros::kAllStatusService), [this](const std::shared_ptr<packml_msgs::srv::AllStatus::Request>& req, const std::shared_ptr<packml_msgs::srv::AllStatus::Response>& res){on_all_status(req, res); });
     // Status is a latched state topic: it is only published on state change.
     // Use TRANSIENT_LOCAL + RELIABLE (depth 1) so late-joining subscribers
@@ -1076,9 +2169,14 @@ protected:
     if (!node->has_parameter(packml_ros::kParamHeartbeatTimeoutFactor)) {
       node->declare_parameter(packml_ros::kParamHeartbeatTimeoutFactor, 3.0);
     }
-    // Health-gate bypass: disabled by default (gate enforces ERROR in every mode).
-    // To allow an operator to RESET past an EM ERROR for diagnostics, set
-    // manual_mode_allows_health_bypass=true AND manual_mode=<the manual mode value>.
+    // Health-gate bypass: disabled by default (gate enforces ERROR in every mode). Set
+    // manual_mode_allows_health_bypass=true AND manual_mode=<the manual mode value> to let an
+    // operator command RESET past an EM ERROR for diagnostics.
+    //
+    // ADMISSION ONLY, and incomplete as a feature: the bypass reaches the gate below, not the
+    // coordinated-completion cross-check, which reads HealthMonitor::is_node_healthy() and is
+    // hardcoded to the non-bypassed answer. RESET is therefore accepted and RESETTING then aborts
+    // on the same node. See is_node_healthy()'s own comment for what closing this requires.
     if (!node->has_parameter(packml_ros::kParamManualModeAllowsHealthBypass)) {
       node->declare_parameter(packml_ros::kParamManualModeAllowsHealthBypass, false);
     }
@@ -1106,6 +2204,39 @@ protected:
       static_cast<uint32_t>(startup_grace_ms > 0
         ? static_cast<double>(startup_grace_ms) / timeout_factor
         : 1000.0);
+
+    // -----------------------------------------------------------------------
+    // Mode masks: parse ONCE and KEEP the table.
+    // -----------------------------------------------------------------------
+    // Parsing the table for the boot changeMode() call and then discarding it would leave
+    // ~/changeMode nothing to apply, falling back to the all-open overload. Owned here instead,
+    // so both the boot path and every runtime mode change consult the same source. Fail-open on
+    // a bad/missing file, matching how error_catalog_file and the rest of this init() handle
+    // configuration problems.
+    if (!node->has_parameter(packml_ros::kParamModesConfigFile)) {
+      node->declare_parameter(packml_ros::kParamModesConfigFile, std::string(""));
+    }
+    const auto modes_config_path =
+      node->get_parameter(packml_ros::kParamModesConfigFile).as_string();
+    if (!modes_config_path.empty()) {
+      mode_masks_ = packml_sm::parse_modes_config(modes_config_path);
+      RCLCPP_INFO(rclcpp::get_logger("packml_ros"),
+        "[Modes] loaded %zu per-mode state mask(s) from %s",
+        mode_masks_.size(), modes_config_path.c_str());
+    }
+
+    // Keep the manager's own view of the mode in step with the state machine's, whoever
+    // changed it. Without this the boot changeMode() (issued by SMNode_new AFTER this init()
+    // returns) never reached the manager: current_mode stayed 0 while the machine really was
+    // in the configured initial_mode, the published Status reported 0, and the health-gate
+    // bypass predicate -- which compares against this atomic -- could never match a
+    // configured manual mode. That was a closed deadlock: the only other writer of this
+    // atomic is ~/changeMode, which mode_switcher() permits only from IDLE, which the gate
+    // was blocking. Preserves the state machine's own default log line.
+    sm->on_mode_changed = [this](packml_sm::ModeType value) {
+        PACKML_INFO_STREAM("packml_sm", "Default callback; Mode changed to: " << value);
+        current_mode.store(value);
+      };
 
     health_monitor_ = std::make_unique<HealthMonitor>(
       [this](int32_t action) { fire_packml_action(action); },
@@ -1158,12 +2289,125 @@ protected:
               RCLCPP_WARN(rclcpp::get_logger("packml_ros"),
                 "[HealthMonitor] Node '%s' restarted (heartbeat sequence reset)",
                 req_node.c_str());
+              // A required node's own state after an unannounced restart is unknown, and
+              // PackML has no "reconcile silently" path -- recovery already goes through
+              // CLEAR→RESET regardless of what triggers it. Route the
+              // restart through the same fire_packml_action() path as any other health
+              // escalation rather than inventing a parallel one; it's idempotent, so a
+              // restart detected while already ABORTING/ABORTED is a harmless no-op.
+              fire_packml_action(packml_msgs::msg::NodeHealth::ABORT);
             }
           }));
 
       RCLCPP_INFO(rclcpp::get_logger("packml_ros"),
         "[HealthMonitor] Monitoring required node: %s (topic: %s)",
         req_node.c_str(), topic.c_str());
+    }
+
+    // -----------------------------------------------------------------------
+    // Completion Tracker setup
+    // -----------------------------------------------------------------------
+    // No separate opt-in node list: every node in node_names is fanned out to via the
+    // ~/packml_state_transition ACTION (see fanout_state_transition()), and that action's
+    // own result IS the completion signal -- a node that never overrides
+    // defers_completion() simply resolves its goal the instant it's accepted, matching
+    // today's behavior exactly and costing this wait nothing. Whether a node meaningfully
+    // participates in coordination is therefore that node's OWN choice, in its own code,
+    // never manager-side configuration.
+    if (!node->has_parameter(packml_ros::kParamStateCompleteTimeoutMs)) {
+      node->declare_parameter(packml_ros::kParamStateCompleteTimeoutMs, 30000);
+    }
+    const int state_complete_timeout_ms_default =
+      node->get_parameter(packml_ros::kParamStateCompleteTimeoutMs).as_int();
+
+    completion_tracker_ = std::make_unique<CompletionTracker>(
+      [this](const std::string & name) { return health_monitor_->is_node_healthy(name); });
+
+    // Bind every coordinated acting state EXCEPT EXECUTE: ContinuousCycle::init()
+    // (packml_sm/src/state_machine.cpp) removes the generated EXECUTE→COMPLETING
+    // transition and installs its own EXECUTE→EXECUTE self-loop operation method BEFORE
+    // this init() runs (continuousCycleSM() constructs and initializes the state machine
+    // first — see packml_ros-new.hpp). setOperationMethod() is an unconditional overwrite,
+    // so binding EXECUTE here would silently replace that self-loop with a blocking
+    // multi-node wait on every production iteration. COMPLETING stays bound: it is never
+    // entered under ContinuousCycle, so binding it there is inert dead code, and it
+    // becomes live for a future SingleCycle deployment.
+    static constexpr packml_sm::State kCoordinatedStates[] = {
+      packml_sm::State::CLEARING, packml_sm::State::STOPPING, packml_sm::State::RESETTING,
+      packml_sm::State::STARTING, packml_sm::State::HOLDING, packml_sm::State::UNHOLDING,
+      packml_sm::State::SUSPENDING, packml_sm::State::UNSUSPENDING,
+      packml_sm::State::COMPLETING, packml_sm::State::ABORTING,
+    };
+    for (const auto coordinated_state : kCoordinatedStates) {
+      // Per-state override: some coordinated states genuinely need a different bound than
+      // others (e.g. RESETTING's homing sequence vs. ABORTING's near-instant e-stop), so one
+      // global state_complete_timeout_ms for all ten was too coarse. Declared as
+      // "state_complete_timeout_ms.<STATE NAME>" (e.g. state_complete_timeout_ms.RESETTING),
+      // defaulting to state_complete_timeout_ms_default so a deployment that never sets an
+      // override behaves exactly as before.
+      const std::string state_timeout_param =
+        std::string(packml_ros::kParamStateCompleteTimeoutMs) + "." +
+        packml_sm::to_string(coordinated_state);
+      if (!node->has_parameter(state_timeout_param)) {
+        node->declare_parameter(state_timeout_param, state_complete_timeout_ms_default);
+      }
+      const int state_complete_timeout_ms =
+        node->get_parameter(state_timeout_param).as_int();
+
+      // setInterruptibleStateOperation (not plain setStateOperation): passes this acting
+      // state's own std::stop_token through to wait_for_all(), so an operator's HOLD/
+      // SUSPEND/ABORT/STOP accepted while this wait is in flight wakes it immediately
+      // instead of riding out the full state_complete_timeout_ms before the state machine
+      // can actually leave this state -- see ActingState::onExit() in packml_sm for why
+      // that blocking mattered (it holds up every OTHER node's fan-out too, since the
+      // interrupting transition can't complete, and thus can't fan out, until this
+      // acting state's own operation returns).
+      sm_->setInterruptibleStateOperation(coordinated_state,
+        [this, coordinated_state, state_complete_timeout_ms](std::stop_token stop_token) -> int {
+        // ABORTING opts out of the health cross-check: it is already the terminal response to an
+        // unhealthy node, and the node that caused the abort is by definition still unhealthy
+        // while it runs, so cross-checking there fails the wait with nowhere left to escalate.
+        // See wait_for_all()'s own doc comment.
+        const bool health_cross_check = (coordinated_state != packml_sm::State::ABORTING);
+        const auto result = completion_tracker_->wait_for_all(
+          std::chrono::milliseconds(state_complete_timeout_ms), stop_token, health_cross_check);
+        switch (result) {
+          case CompletionTracker::WaitResult::COMPLETE:
+            return 0;
+          case CompletionTracker::WaitResult::SHUTDOWN:
+            // Let teardown proceed quietly -- do not route into ErrorEvent/ABORTING
+            // while the manager is already being destroyed.
+            return 0;
+          case CompletionTracker::WaitResult::INTERRUPTED:
+            // The state machine already decided to leave this state early (see
+            // ActingState::operation()'s own comment on why it will not post a stale
+            // completion/error event for it either way) -- the return value here is
+            // moot to the machine, but still cancel this round's other outstanding
+            // goals so nodes that hadn't yet answered are told to stop rather than
+            // silently abandoned.
+            cancel_pending_state_goals();
+            return 1;
+          case CompletionTracker::WaitResult::TIMEOUT:
+            RCLCPP_ERROR(rclcpp::get_logger("packml_ros"),
+              "[CompletionTracker] Timed out waiting for node(s) to report %s complete",
+              to_string(coordinated_state).c_str());
+            cancel_pending_state_goals();
+            return 1;
+          case CompletionTracker::WaitResult::FAILED:
+            RCLCPP_ERROR(rclcpp::get_logger("packml_ros"),
+              "[CompletionTracker] A node reported failure completing %s",
+              to_string(coordinated_state).c_str());
+            cancel_pending_state_goals();
+            return 1;
+          case CompletionTracker::WaitResult::ABORTED_BY_HEALTH:
+            RCLCPP_ERROR(rclcpp::get_logger("packml_ros"),
+              "[CompletionTracker] A node became unhealthy while waiting for %s to complete",
+              to_string(coordinated_state).c_str());
+            cancel_pending_state_goals();
+            return 1;
+        }
+        return 1;
+      });
     }
 
     // Optional: load the aggregated error catalog so on_alarm_event() can
@@ -1260,6 +2504,50 @@ protected:
       "[HealthMonitor] Monitoring %zu required node(s), timeout_factor=%.1f",
       required_nodes.size(), timeout_factor);
 
+    // Runs for the life of the node rather than once after discovery settles: a second manager
+    // can be launched at any time, and "settled" has no observable moment in a ROS graph.
+    status_owner_timer_ = node->create_wall_timer(
+      std::chrono::seconds(5), [this]() { check_status_topic_ownership(); });
+
+  }
+
+  /// Warn when another node publishes the status topic this manager owns. Edge-triggered on the
+  /// set of names, so an operator gets one line per change instead of a warning every tick, and
+  /// gets a second line when the duplicate goes away.
+  void check_status_topic_ownership()
+  {
+    if (nullptr == status_pub_ || nullptr == node_) {
+      return;
+    }
+    const auto & gid = status_pub_->get_gid();
+    std::array<uint8_t, RMW_GID_STORAGE_SIZE> own_gid{};
+    std::copy(std::begin(gid.data), std::end(gid.data), own_gid.begin());
+
+    auto others =
+      packml_ros::foreign_publishers_on(*node_, status_pub_->get_topic_name(), own_gid);
+    std::sort(others.begin(), others.end());
+    if (others == reported_status_publishers_) {
+      return;
+    }
+    reported_status_publishers_ = others;
+
+    if (others.empty()) {
+      RCLCPP_INFO(rclcpp::get_logger("packml_ros"),
+        "[Status] '%s' has no other publishers again — this manager is its only writer",
+        status_pub_->get_topic_name());
+      return;
+    }
+
+    std::string list;
+    for (const auto & name : others) {
+      if (!list.empty()) { list += ", "; }
+      list += name;
+    }
+    RCLCPP_WARN(rclcpp::get_logger("packml_ros"),
+      "[Status] '%s' is also published by: %s. Only this manager should write it — an equipment "
+      "module adopts whatever arrives as the machine's state, and may skip coordinated work it "
+      "believes is already done. Check for a duplicated launch entry or a second manager.",
+      status_pub_->get_topic_name(), list.c_str());
   }
 
 };

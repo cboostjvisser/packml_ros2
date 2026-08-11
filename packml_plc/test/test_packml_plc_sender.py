@@ -152,7 +152,7 @@ class TestMethods(unittest.TestCase):
             for cmd, expected_state in valid_sequence:
                 req.command = cmd
                 driver.trans_request(req, res)
-                self.assertTrue(res.success, f"Command {cmd} should succeed per PackML spec")
+                self.assertTrue(res.success, f"Command {cmd} should succeed")
                 # Give the mock PLC a moment to process
                 time.sleep(0.1)
                 # Check that only the expected state is True

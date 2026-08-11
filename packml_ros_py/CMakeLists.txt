@@ -35,7 +35,11 @@ install(CODE "
     RESULT_VARIABLE _stubgen_result
   )
   if(NOT _stubgen_result EQUAL 0)
-    message(WARNING \"pybind11-stubgen failed (exit \${_stubgen_result}). Type stubs not generated. This is non-critical; the module will still function without type hints.\")
+    # The semicolon is escaped because install(CODE) takes a CMake list: an unescaped one ends
+    # the element, and everything after it -- including this message's closing quote and the
+    # endif() below -- is dropped from the generated cmake_install.cmake, which then fails to
+    # parse. Only a clean build shows it, since an incremental one reuses the older script.
+    message(WARNING \"pybind11-stubgen failed (exit \${_stubgen_result}). Type stubs not generated. This is non-critical\; the module will still function without type hints.\")
   endif()
 ")
 

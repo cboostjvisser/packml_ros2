@@ -179,6 +179,59 @@ inside it. The periodic timer checks whether heartbeats are paused *before* call
 `get_health_status()`, so a state-mutating getter can silently make its own follow-up
 logic unreachable.
 
+## Acting-state completion (optional)
+
+By default, an Equipment Module completes every commanded acting state (RESETTING, STARTING, …)
+the instant it accepts the transition — matching PackML's classic unconditional-timer behavior.
+A node that does real, non-instant work for a given state (homing an axis, running a self-test)
+can instead defer completion and report it once that work has genuinely finished:
+
+**C++:**
+
+      class MyMotor : public PackmlNodeInterface {
+      protected:
+        bool defers_completion(packml_sm::State state) override {
+          return state == packml_sm::State::RESETTING;
+        }
+        bool on_state_trans_req(packml_sm::State state) override {
+          if (state == packml_sm::State::RESETTING) {
+            std::thread([this]() {
+                home_axis();  // real, possibly slow work
+                report_state_complete(packml_sm::State::RESETTING, true);
+              }).detach();
+          }
+          return true;
+        }
+      };
+
+**Python:**
+
+      class MyMotor(PackmlNode):
+          def defers_completion(self, state):
+              return state == State.RESETTING
+
+          def on_state_transition_request(self, state):
+              if state == State.RESETTING:
+                  threading.Thread(target=self._home_axis, daemon=True).start()
+              return True
+
+          def _home_axis(self):
+              ...  # real, possibly slow work
+              self.report_state_complete(State.RESETTING, True)
+
+The manager fans the transition out to every node in `node_names` as a
+`~/packml_state_transition` **action** (not a plain service) and blocks the acting state on the
+Qt state-machine's own worker thread — never the ROS executor — until every node's result comes
+back, one fails, a required node goes unhealthy mid-wait, or `state_complete_timeout_ms` (default
+`30000`) elapses, in which case the machine routes to `ABORTING` and cancels every other
+still-outstanding node's goal for that round. `report_state_complete(state, success, error_code=0,
+message="")` takes an explicit success/failure so a node's own detected failure aborts the wait
+fast rather than riding out the timeout. `deferred_completion_timeout_ms` (default `30000`) is a
+per-node safety net: if a node overrides `defers_completion()` but forgets to call
+`report_state_complete()`, its own goal times out on its own rather than hanging forever. A node
+that never overrides `defers_completion()` — the default, and every existing Equipment Module —
+costs nothing: it behaves exactly as before.
+
 ## Error catalog
 
 Turns a bare `NodeHealth.error_code` integer into a symbolic name, a

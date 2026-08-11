@@ -29,7 +29,7 @@ import launch_testing
 import launch_testing.actions
 import pytest
 import rclpy
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 from packml_msgs.srv import StateChange
 from packml_msgs.msg import Status
@@ -74,11 +74,23 @@ class TestPythonNodeManagedByCppManager(unittest.TestCase):
             '/packml_manager/changeState',
         )
         cls.last_status = None
+        # Match the manager's LATCHED status publisher (TRANSIENT_LOCAL + RELIABLE, depth 1 --
+        # see where status_pub_ is created in packml_interface.hpp). This subscription used
+        # qos_profile_sensor_data, which is VOLATILE: compatible enough to match, but a volatile
+        # subscriber is never given the retained sample. Status is published only on CHANGE, and
+        # the manager publishes STOPPED exactly once at boot, so whether test_01 ever saw it came
+        # down to whether this subscription finished matching before that single publish. Alone it
+        # usually won; behind another test module's import time it usually lost, and then no later
+        # message could rescue it because the machine does not re-enter STOPPED on its own.
         cls.status_sub = cls.node.create_subscription(
             Status,
             'packml_status',
             cls._on_status,
-            qos_profile_sensor_data,
+            QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
         )
 
     @classmethod
@@ -109,11 +121,28 @@ class TestPythonNodeManagedByCppManager(unittest.TestCase):
         return False
 
     def test_01_manager_service_available(self):
-        """Manager's changeState service should come up."""
+        """Manager's changeState service should come up, and the system should settle
+        into its initial STOPPED state before any test issues its own transition.
+
+        The state-transition action's goal/cancel/result/feedback/status entities take
+        longer to discover across the manager<->EM pair than the single service they
+        replaced -- waiting only for the manager's own changeState service (as before)
+        let test_02 fire RESET while that discovery, and the activation-time STOPPED
+        fanout it gates, were still in flight. A RESETTING goal arriving at the EM
+        before it had processed the STOPPED status update hit TransitionGuard's
+        "already in progress" rejection, since that flag only clears on an observed
+        status change -- not on the EM's own action goal completing.
+        """
         self.assertTrue(
             self.state_change_client.wait_for_service(timeout_sec=10.0),
             'Manager changeState service did not become available',
         )
+        got_stopped = self._spin_until_state(2, timeout=10.0)  # STOPPED
+        self.assertTrue(got_stopped, 'System did not settle into STOPPED at startup')
+        # This test's own status subscription observing STOPPED confirms the manager
+        # has published it, but not that the EM (a separate process) has finished
+        # processing that same message yet -- give it a brief margin too.
+        time.sleep(0.3)
 
     def test_02_reset_to_idle(self):
         """RESET should bring the system through RESETTING → IDLE."""

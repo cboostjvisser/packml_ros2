@@ -154,6 +154,8 @@ if(BUILD_TESTING)
     test/test_commands.cpp
     test/test_modes.cpp
     test/test_errors.cpp
+    test/test_event_identity.cpp
+    test/test_command_bridge.cpp
     test/test_logging.cpp
     TIMEOUT 240)
 

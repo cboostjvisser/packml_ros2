@@ -9,15 +9,18 @@
   <license>Apache 2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
   <buildtool_depend>ros_industrial_cmake_boilerplate</buildtool_depend>
 
   <build_depend>rclcpp</build_depend>
+  <build_depend>rclcpp_action</build_depend>
   <build_depend>packml_msgs</build_depend>
   <build_depend>packml_sm</build_depend>
   <build_depend>qtbase5-dev</build_depend>
   <build_depend>yaml-cpp</build_depend>
 
   <exec_depend>rclcpp</exec_depend>
+  <exec_depend>rclcpp_action</exec_depend>
   <exec_depend>packml_msgs</exec_depend>
   <exec_depend>packml_sm</exec_depend>
   <exec_depend>libqt5-core</exec_depend>

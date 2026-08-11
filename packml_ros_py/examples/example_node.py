@@ -15,6 +15,9 @@
 
 """Example PackML Python node that can be managed by the PackML manager."""
 
+import threading
+import time
+
 import rclpy
 
 from packml_ros_py import PackmlNode, State
@@ -26,10 +29,26 @@ class ExamplePackmlNode(PackmlNode):
     def __init__(self):
         super().__init__('example_packml_py_node')
 
+    def defers_completion(self, state: State) -> bool:
+        # Only RESETTING defers -- every other coordinated state completes the
+        # instant on_state_transition_request() approves it (the default). See
+        # on_deferred_work() below for the work itself.
+        return state == State.RESETTING
+
     def on_state_transition_request(self, target_state: State) -> bool:
         self.get_logger().info(f'[Example] State transition to {target_state.name} requested')
-        # Accept all transitions
         return True
+
+    def on_deferred_work(self, state: State, completion) -> None:
+        # Simulate real commanded work (e.g. homing an axis) that finishes some time after the
+        # transition is accepted, then report it through this goal's own handle -- so it stays
+        # this goal's completion even if a later RESETTING starts in the meantime.
+        threading.Thread(
+            target=self._finish_resetting, args=(completion,), daemon=True).start()
+
+    def _finish_resetting(self, completion) -> None:
+        time.sleep(0.5)
+        completion.report(True)
 
     def on_mode_transition_request(self, target_mode: int) -> bool:
         self.get_logger().info(f'[Example] Mode transition to {target_mode} requested')

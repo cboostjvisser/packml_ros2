@@ -820,7 +820,7 @@ nodes:
 
 
 def test_cli_survives_wrong_shape_yaml_without_traceback(workdir):
-    # A null descriptions block used to raise an unhandled AttributeError.
+    # A null descriptions block must not raise an unhandled AttributeError.
     map_path = write(str(workdir / 'map.yaml'), """
 instances:
   - 1

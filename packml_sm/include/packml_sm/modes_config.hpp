@@ -7,7 +7,6 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
-
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
@@ -127,6 +126,12 @@ parse_modes_config(const std::string & yaml_file)
                     << "': " << e.what() << ", defaulting to true" << std::endl;
         }
       }
+    }
+
+    for (const auto & state_name : enforce_mandatory_states(avail)) {
+      std::cerr << "[modes_config] mode '" << mode_name << "' disables " << state_name
+                << ", which is mandatory -- restoring it. The applied mask differs from the file."
+                << std::endl;
     }
 
     result[mode_it->second] = avail;

@@ -140,7 +140,7 @@ is never affected.
 
 Both build hooks above are CMake functions, but a Python-only node or bringup
 package (build_type `ament_python`) has no CMakeLists.txt to call them from.
-The same two scripts can be invoked from `setup.py` instead.
+The same generation runs from `setup.py` instead.
 
 **Vendor side** — generate a Python constants module instead of a C++ header,
 and install the catalog alongside it:
@@ -178,19 +178,27 @@ survive. Declare `<depend>packml_ros</depend>` and
 `<depend>ament_index_python</depend>` in package.xml so the generator script
 is installed before your package builds.
 
-**Integrator side** — run the aggregation from the bringup package's setup.py
-the same way:
+**Integrator side** — `packml_ros` ships the setup.py equivalent of
+`packml_ros_aggregate_error_catalog()` as an importable module, so a bringup
+package does not hand-roll the subprocess call:
 
-    subprocess.check_call([
-        sys.executable,
-        os.path.join(get_package_share_directory('packml_ros'),
-                     'cmake', 'aggregate_error_catalog.py'),
-        '--map', os.path.join(_here, 'config', 'error_map.yaml'),
-        '--output-dir', os.path.join(_here, 'config', 'generated'),
-    ])
+    # setup.py
+    from packml_ros_setup import aggregate_error_catalog
+
+    generated = aggregate_error_catalog(__file__)
 
     # data_files:
-    ('share/' + package_name + '/config', glob.glob('config/generated/*')),
+    ('share/' + package_name + '/config',
+        glob.glob('config/*.yaml') + generated),
+
+`aggregate_error_catalog()` resolves the symlinked setup.py back to the source
+tree, wipes stale artifacts from a previous run, writes
+`config/generated/machine_error_catalog.yaml` (+ `.json`/`.md`) and returns
+those paths relative to the package, ready for `data_files`. Defaults are
+`config/error_map.yaml` and `config/generated`; `error_map=`, `output_dir=`,
+`formats=`, `strict=` and `check_instances=` mirror the CMake function's
+options. Declare `<depend>packml_ros</depend>` so the module is on `PYTHONPATH`
+before your package builds.
 
 A lint failure (duplicate global, broken catalog reference, …) exits non-zero,
 which fails `setup.py` — and with it `colcon build` — the same guarantee the

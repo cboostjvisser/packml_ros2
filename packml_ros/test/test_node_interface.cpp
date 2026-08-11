@@ -7,7 +7,6 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
-
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
@@ -20,6 +19,7 @@
 
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 #include <chrono>
 #include <memory>
 #include <thread>
@@ -27,7 +27,7 @@
 #include <string>
 
 #include "packml_ros/interface/packml_interface.hpp"
-#include "packml_msgs/srv/state_transition.hpp"
+#include "packml_msgs/action/state_transition.hpp"
 #include "packml_msgs/srv/mode_transition.hpp"
 #include "packml_msgs/msg/status.hpp"
 #include "packml_msgs/msg/state.hpp"
@@ -35,6 +35,7 @@
 #include "test_helpers.hpp"
 
 using namespace std::chrono_literals;
+using StateTransitionAction = packml_msgs::action::StateTransition;
 
 /// Concrete implementation of PackmlNodeInterface for testing
 class TestPackmlNode : public PackmlNodeInterface
@@ -83,18 +84,31 @@ protected:
   void SetUp() override
   {
     node_name_ = packml_ros_test::unique_node_name("node_iface_test");
-    node_ = rclcpp::Node::make_shared(node_name_);
+    // Own namespace per fixture instance, so this node's status topic is
+    // /<node>_ns/packml_status rather than the bare global /packml_status every other
+    // participant on the domain also writes. What this fixture asserts on is what the
+    // node believes its current state to be, and PackmlNodeInterface adopts that from
+    // whatever arrives on the status topic -- so an unrelated manager publishing its own
+    // status is enough to change the answer. Traced to this after the already-in-state
+    // test flaked while packml_ros_shakedown ran alongside: that binary's oscillation
+    // probe republishes EXECUTE at ~5 Hz, one landed between this test's own IDLE
+    // publication and its request, and the shortcut correctly did not fire. Reproduced
+    // 3/3 by aiming the same traffic at this namespace, 0/3 at the global topic.
+    // Every name PackmlNodeInterface creates is relative, and
+    // the clients below are built on this same node, so they follow the namespace
+    // together and nothing else needs to know about it.
+    node_ = rclcpp::Node::make_shared(node_name_, "/" + node_name_ + "_ns");
     test_node_ = std::make_unique<TestPackmlNode>(node_);
 
-    // Client for calling the node's services
-    state_client_ = node_->create_client<packml_msgs::srv::StateTransition>(
-      node_name_ + "/packml_state_transition");
+    // Client for calling the node's action/service
+    state_client_ = rclcpp_action::create_client<StateTransitionAction>(
+      node_, node_name_ + "/packml_state_transition");
     mode_client_ = node_->create_client<packml_msgs::srv::ModeTransition>(
       node_name_ + "/packml_mode_transition");
 
     spinner_ = std::make_unique<packml_ros_test::SpinHelper>(node_);
 
-    ASSERT_TRUE(state_client_->wait_for_service(5s));
+    ASSERT_TRUE(state_client_->wait_for_action_server(5s));
     ASSERT_TRUE(mode_client_->wait_for_service(5s));
   }
 
@@ -107,15 +121,26 @@ protected:
     node_.reset();
   }
 
-  packml_msgs::srv::StateTransition::Response::SharedPtr send_state(int8_t state_val)
+  /// Send a state-transition goal and wait for its RESULT (not merely acceptance) —
+  /// returns nullptr if the goal was rejected outright or nothing arrived in time.
+  StateTransitionAction::Result::SharedPtr send_state(int8_t state_val)
   {
-    auto req = std::make_shared<packml_msgs::srv::StateTransition::Request>();
-    req->state.val = state_val;
-    auto future = state_client_->async_send_request(req);
-    if (future.wait_for(5s) == std::future_status::ready) {
-      return future.get();
+    StateTransitionAction::Goal goal;
+    goal.state.val = state_val;
+
+    auto goal_handle_future = state_client_->async_send_goal(goal);
+    if (goal_handle_future.wait_for(5s) != std::future_status::ready) {
+      return nullptr;
     }
-    return nullptr;
+    auto goal_handle = goal_handle_future.get();
+    if (!goal_handle) {
+      return nullptr;  // rejected at the ROS admission level
+    }
+    auto result_future = state_client_->async_get_result(goal_handle);
+    if (result_future.wait_for(5s) != std::future_status::ready) {
+      return nullptr;
+    }
+    return result_future.get().result;
   }
 
   packml_msgs::srv::ModeTransition::Response::SharedPtr send_mode(int8_t mode_val)
@@ -132,7 +157,7 @@ protected:
   std::string node_name_;
   rclcpp::Node::SharedPtr node_;
   std::unique_ptr<TestPackmlNode> test_node_;
-  rclcpp::Client<packml_msgs::srv::StateTransition>::SharedPtr state_client_;
+  rclcpp_action::Client<StateTransitionAction>::SharedPtr state_client_;
   rclcpp::Client<packml_msgs::srv::ModeTransition>::SharedPtr mode_client_;
   std::unique_ptr<packml_ros_test::SpinHelper> spinner_;
 };

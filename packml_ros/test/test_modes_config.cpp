@@ -7,7 +7,6 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
-
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
@@ -60,6 +59,7 @@ state_masks:
   MANUAL:
     HOLDING: false
     HELD: false
+    UNHOLDING: false
     SUSPENDING: false
     SUSPENDED: false
     UNSUSPENDING: false
@@ -155,6 +155,7 @@ state_masks:
   MANUAL:
     HOLDING: false
     HELD: false
+    UNHOLDING: false
 )");
 
   auto result = packml_sm::parse_modes_config(temp_file_);
@@ -164,4 +165,26 @@ state_masks:
   EXPECT_TRUE(result[1][packml_sm::State::HELD]);
   EXPECT_FALSE(result[2][packml_sm::State::HOLDING]);
   EXPECT_FALSE(result[2][packml_sm::State::HELD]);
+}
+
+// A mode that disables a wait state while leaving its acting state enabled is incoherent: the
+// acting state would have nowhere to land. The parser repairs it rather than rejecting the file.
+TEST_F(ModesConfigTest, IncoherentMaskIsRepairedOnLoad)
+{
+  write_yaml(R"(
+modes:
+  MANUAL: 2
+
+state_masks:
+  MANUAL:
+    HELD: false
+    EXECUTE: false
+)");
+
+  auto result = packml_sm::parse_modes_config(temp_file_);
+  ASSERT_NE(result.find(2), result.end());
+  EXPECT_TRUE(result[2][packml_sm::State::EXECUTE])
+    << "EXECUTE is mandatory and must be restored on load";
+  EXPECT_TRUE(result[2][packml_sm::State::HELD])
+    << "HOLDING/UNHOLDING are still enabled, so HELD must be restored on load";
 }

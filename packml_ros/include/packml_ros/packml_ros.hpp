@@ -171,9 +171,32 @@ public:
   //   std::cout << "Error setting parameter!";
   // }
 
-    // Needs to be calibrated with the time of the PLC
-    sm->setExecute(std::bind(myExecuteMethod));
-    sm->activate();
+    // sm->setExecute(std::bind(myExecuteMethod));
+    // sm->activate();
+    // EXECUTE holds until commanded out -- see SMNode_new's constructor for the reasoning.
+    //
+    // NOT `setExecute(std::bind(myExecuteMethod))`: myExecuteMethod() prints two lines and returns
+    // 0 with its own work loop commented out, so EXECUTE would complete IMMEDIATELY and, since a
+    // continuous cycle sends EXECUTE's completion straight back into EXECUTE, free-spin at
+    // whatever rate the Qt loop allows -- hundreds of re-entries per run from this node alone,
+    // varying with machine load rather than with anything the caller did.
+    sm->setInterruptibleStateOperation(packml_sm::State::EXECUTE,
+      [](std::stop_token stop_token) -> int {
+        while (!stop_token.stop_requested()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        return 0;
+      });
+
+    // See SMNode_new's constructor: a node whose state machine never started answers every
+    // command with a refusal and never publishes a state, while looking healthy from outside.
+    if (!sm->activate()) {
+      for (const auto & fault : sm->errorEscapeReport()) {
+        RCLCPP_FATAL_STREAM(rclcpp::get_logger("packml_ros"),
+          "State machine graph is unsafe to run: " << fault);
+      }
+      throw std::runtime_error("packml state machine failed to activate");
+    }
 
     printf("SM created\n");
 

@@ -7,7 +7,6 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
-
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
@@ -15,6 +14,9 @@
 //
 // ---
 // Example C++ PackML "Equipment Module" node that can be managed by the manager.
+
+#include <chrono>
+#include <thread>
 
 #include <rclcpp/rclcpp.hpp>
 #include "packml_ros/interface/packml_interface.hpp"
@@ -30,11 +32,30 @@ public:
   }
 
 protected:
+  // Every state completes the instant on_state_trans_req() approves it (the default) EXCEPT
+  // RESETTING, which this example defers to demonstrate real coordinated completion -- see
+  // on_deferred_work() below.
+  bool defers_completion(packml_sm::State state) override
+  {
+    return state == packml_sm::State::RESETTING;
+  }
+
   bool on_state_trans_req(packml_sm::State state) override
   {
     RCLCPP_INFO(node_->get_logger(), "State transition to %s requested - accepted",
                 packml_sm::to_string(state).c_str());
     return true;
+  }
+
+  // Simulate real reset work (e.g. homing an axis) finishing asynchronously. The manager's own
+  // coordinated wait blocks until this goal's handle is reported -- captured by value into the
+  // work, so it stays this goal's completion even if a later RESETTING starts in the meantime.
+  void on_deferred_work(packml_sm::State, packml_ros::DeferredCompletion completion) override
+  {
+    std::thread([completion]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        completion.report(true);
+      }).detach();
   }
 
   bool on_mode_trans_req(packml_sm::ModeType mode) override

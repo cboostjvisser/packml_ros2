@@ -81,6 +81,22 @@ def generate_modes_header(yaml_file, output_file):
             f.write(f'      case {value}: return "{name}";\n')
         f.write('    default: return std::to_string(mode);\n')
         f.write('  }\n')
+        f.write('}\n\n')
+        # The C++ side had no way to ask "is this a mode at all", while the Python module has
+        # emitted ALL_MODES from the start. Without it, callers either trusted the number or
+        # abused to_string() (which stringifies an unknown value rather than failing), and
+        # ModeType is a bare int, so nothing else stops a wrong one.
+        f.write('/// Is `mode` one of the modes declared in the YAML this header was generated\n')
+        f.write('/// from? Note a declared sentinel such as Invalid answers true -- this asks\n')
+        f.write('/// whether the value is KNOWN, not whether it is a sensible thing to '
+                'switch to.\n')
+        f.write('inline bool is_known_mode(ModeType mode)\n')
+        f.write('{\n')
+        f.write('  switch (mode) {\n')
+        for name, value in modes.items():
+            f.write(f'      case {value}: return true;   // {name}\n')
+        f.write('    default: return false;\n')
+        f.write('  }\n')
         f.write('}\n')
         f.write('\n}  // namespace packml_sm\n\n')
         f.write(f'#endif  // {header_guard}_\n')

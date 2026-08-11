@@ -22,6 +22,9 @@
 // ---
 
 #include <chrono>
+#include <string>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include "packml_sm/state_machine.hpp"
@@ -32,6 +35,47 @@ using packml_sm_test::wait_for_state;
 using packml_sm_test::drive_to_idle;
 using packml_sm_test::execute_fail;
 using packml_sm_test::execute_success_long;
+
+namespace {
+
+std::string join_names(const std::vector<std::string> & names)
+{
+  std::string joined;
+  for (const auto & name : names) {
+    joined += joined.empty() ? name : (", " + name);
+  }
+  return joined;
+}
+
+}  // namespace
+
+// Every acting state must OWN the ERROR transition that reaches its declared failure target,
+// rather than inherit one from a superstate.  The two look equivalent and are not: an inherited
+// escape serves only descendants, and it silently serves none at all for a state constructed
+// outside that superstate.  ABORTING is that state -- parentless, so it inherited nothing, and
+// the superstate's error edge targeted ABORTING itself anyway, so inheriting it would have
+// self-looped rather than escaped.  A failure of ABORTING's own operation therefore posted an
+// event that matched nothing, which Qt discarded, wedging the machine with no reachable exit.
+// The other twelve tests in this file only prove that errors escalate today; this one is what
+// keeps that true when a thirteenth acting state is added.
+TEST(Errors, EveryActingStateOwnsItsErrorEscape)
+{
+  auto continuous = packml_sm::StateMachine::continuousCycleSM(packml_sm_test::kTestDelayMs);
+  const auto continuous_faults = continuous->errorEscapeReport();
+  EXPECT_TRUE(continuous_faults.empty())
+    << "continuous-cycle failure-target faults: " << join_names(continuous_faults);
+
+  auto single = packml_sm::StateMachine::singleCycleSM(packml_sm_test::kTestDelayMs);
+  const auto single_faults = single->errorEscapeReport();
+  EXPECT_TRUE(single_faults.empty())
+    << "single-cycle failure-target faults: " << join_names(single_faults);
+
+  // And the report is what activate() gates on, so a graph that fails it cannot be run at all.
+  EXPECT_TRUE(continuous->activate());
+  continuous->deactivate();
+  EXPECT_TRUE(single->activate());
+  single->deactivate();
+}
 
 TEST(Errors, ExecuteErrorEscalatesToAborted)
 {
@@ -189,6 +233,30 @@ TEST(Errors, CompletingErrorEscalatesToAborted)
   ASSERT_TRUE(sm->start());
   // Single-cycle: EXECUTE → COMPLETING (which fails) → ABORTED
   EXPECT_TRUE(wait_for_state(*sm, State::ABORTED, std::chrono::seconds(5)));
+  sm->deactivate();
+}
+
+// Error in the ABORTING acting state must still land somewhere -- ABORTED, the safe terminal.
+//
+// ABORTING was the one acting state of the eleven with no failing-operation test, and that gap is
+// why its missing error escape shipped: the machine had no exit at all from a failed abort, since
+// ABORTING's only other out-edge is its own STATE_COMPLETED, which the failed operation never
+// posts. Not a theoretical state to fail in either -- packml_ros binds ABORTING as a coordinated
+// state whose operation returns non-zero whenever the fan-out to child nodes times out, which is
+// precisely what happens when the node that caused the abort is the one that stopped answering.
+TEST(Errors, AbortingErrorEscalatesToAborted)
+{
+  auto sm = packml_sm::StateMachine::continuousCycleSM(packml_sm_test::kTestDelayMs);
+  sm->setExecute(std::bind(execute_success_long));
+  sm->setStateOperation(State::ABORTING, std::bind(execute_fail));
+  ASSERT_TRUE(sm->activate());
+  ASSERT_TRUE(drive_to_idle(*sm));
+  ASSERT_TRUE(sm->abort());
+  // ABORTING's own operation fails -> its declared failure target is the terminal ABORTED.
+  EXPECT_TRUE(wait_for_state(*sm, State::ABORTED, std::chrono::seconds(5)));
+  // And the machine is genuinely recoverable from there, not merely reporting ABORTED.
+  ASSERT_TRUE(sm->clear());
+  EXPECT_TRUE(wait_for_state(*sm, State::STOPPED, std::chrono::seconds(5)));
   sm->deactivate();
 }
 

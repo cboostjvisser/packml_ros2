@@ -53,17 +53,49 @@ class TestTransitionGuardBindings:
 
     def test_request_state_accepted(self):
         tc = TransitionGuard()
-        result = tc.request_state(State.STOPPED)
-        assert result.accepted is True
-        assert result.already_there is False
-        assert result.error == ''
+        claimed = tc.request_state(State.STOPPED)
+        assert claimed.result.accepted is True
+        assert claimed.result.already_there is False
+        assert claimed.result.error == ''
+        assert claimed.arm.armed is True
+
+    def test_arm_is_released_when_the_request_that_took_it_ends(self):
+        # The arm is scope-bound: dropping the ArmedTransition ends the request, so the next
+        # goal is accepted. Before this it was released only by a status reporting a DIFFERENT
+        # state, which stranded it whenever the state never changed.
+        tc = TransitionGuard()
+        tc.on_status_update(State.STOPPED, 0)
+        claimed = tc.request_state(State.RESETTING)
+        assert tc.is_switching_state is True
+        claimed.arm.release()
+        assert tc.is_switching_state is False
+        assert tc.request_state(State.IDLE).result.accepted is True
+
+    def test_arm_is_a_context_manager(self):
+        tc = TransitionGuard()
+        tc.on_status_update(State.STOPPED, 0)
+        claimed = tc.request_state(State.RESETTING)
+        with claimed.arm:
+            assert tc.is_switching_state is True
+        assert tc.is_switching_state is False
+
+    def test_admitted_goal_not_shortcut_by_racing_status_echo(self):
+        # already_there is decided at admission, where current_state has not yet been
+        # overwritten by this very goal's own status echo.
+        tc = TransitionGuard()
+        tc.admit_state(State.IDLE)
+        tc.on_status_update(State.IDLE, 0)
+        claimed = tc.claim_state(State.IDLE)
+        assert claimed.result.accepted is True
+        assert claimed.result.already_there is False
 
     def test_request_state_already_there(self):
         tc = TransitionGuard()
         tc.on_status_update(State.IDLE, 0)
-        result = tc.request_state(State.IDLE)
-        assert result.accepted is True
-        assert result.already_there is True
+        claimed = tc.request_state(State.IDLE)
+        assert claimed.result.accepted is True
+        assert claimed.result.already_there is True
+        assert claimed.arm.armed is False
 
     def test_request_mode_accepted(self):
         tc = TransitionGuard()
@@ -86,18 +118,21 @@ class TestTransitionGuardBindings:
 
     def test_switching_state_flag(self):
         tc = TransitionGuard()
-        tc.request_state(State.STOPPED)
+        claimed = tc.request_state(State.STOPPED)
         assert tc.is_switching_state is True
+        # A status confirming the arm's own target settles the transition and frees the node.
         tc.on_status_update(State.STOPPED, 0)
         assert tc.is_switching_state is False
+        del claimed
 
     def test_reject_different_state_while_switching(self):
         # While a state transition is in flight, a request for a DIFFERENT state must
         # be rejected (not silently override the in-flight one). Expected: accepted is
         # False with a reason, and the original target survives to completion.
         tc = TransitionGuard()
-        tc.request_state(State.STOPPED)
-        result = tc.request_state(State.IDLE)
+        stopped = tc.request_state(State.STOPPED)
+        assert stopped.result.accepted is True
+        result = tc.request_state(State.IDLE).result
         assert result.accepted is False
         assert result.error != ''
         # Original target preserved: a status update to STOPPED still completes it.
@@ -107,7 +142,7 @@ class TestTransitionGuardBindings:
         assert tc.current_state == State.STOPPED
 
 class TestPackmlNodeProtocolComposition:
-    """Verify PackmlNodeProtocol exposes both concerns as named sub-objects."""
+    """Verify PackmlNodeProtocol exposes all three concerns as named sub-objects."""
 
     def test_has_transitions_and_heartbeat(self):
         p = PackmlNodeProtocol()
@@ -120,8 +155,8 @@ class TestPackmlNodeProtocolComposition:
 
     def test_transitions_request_state(self):
         p = PackmlNodeProtocol()
-        result = p.transitions.request_state(State.STOPPED)
-        assert result.accepted is True
+        claimed = p.transitions.request_state(State.STOPPED)
+        assert claimed.result.accepted is True
 
     def test_heartbeat_init_and_properties(self):
         p = PackmlNodeProtocol()
