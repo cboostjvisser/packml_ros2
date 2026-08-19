@@ -28,6 +28,7 @@ import time
 
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 
@@ -180,9 +181,25 @@ class PackmlNode(Node):
         # Sensor-style QoS (best-effort, keep-last) — must match the manager's
         # heartbeat subscription, or QoS-incompatibility silently drops delivery.
         self._heartbeat_pub = self.create_publisher(NodeHeartbeat, '~/' + HEARTBEAT_TOPIC, sensor_qos)
+        # Its OWN callback group, not the node's default one. The default group is
+        # mutually exclusive, and _handle_state_accepted() deliberately runs
+        # on it synchronously (see its docstring: the local accept decision has to
+        # beat the manager's status echo, so it cannot be moved to another hop).
+        # A subclass whose on_state_transition_request() does blocking work -- e.g.
+        # two bounded round trips to external hardware -- therefore held the
+        # heartbeat off the wire for the whole hook, and the manager's health
+        # monitor read that silence as a dead node and ABORTed the machine. Exactly
+        # the false timeout the hook was supposed to avoid. Nothing here mutates
+        # state the other callbacks own, so running it concurrently with them is
+        # safe; it publishes a health snapshot.
+        #
+        # Needs a MultiThreadedExecutor to have any effect. PackmlNode does not own
+        # the executor, so a single-threaded host still serialises everything and
+        # keeps the old behaviour.
         self._heartbeat_timer = self.create_timer(
             heartbeat_interval_ms / 1000.0,
             self._publish_heartbeat,
+            callback_group=MutuallyExclusiveCallbackGroup(),
         )
 
         self.get_logger().info('PackmlNode initialized')
@@ -525,7 +542,16 @@ class PackmlNode(Node):
             action_result.error_code = error_code
             action_result.message = message
 
+        # The claim arm is released, and on success the local state adopted, BEFORE the
+        # goal handle resolves. The manager fans out the next state the moment the result
+        # arrives, and the round-closing node receives that goal within the same
+        # millisecond -- a claim still held (or a guard still waiting for the status
+        # echo) at that instant rejects it as "already in progress" and fails the whole
+        # round. Leaving the release to the collector when this thread dies is the exact
+        # delay the claim's own contract warns against.
         if goal_handle.is_cancel_requested:
+            if claimed is not None:
+                claimed.arm.release()
             goal_handle.canceled(action_result)
             return
 
@@ -536,6 +562,8 @@ class PackmlNode(Node):
             action_result.success = False
             action_result.error_code = StateTransitionAction.Result.INVALID_STATE_REQUEST
             action_result.message = error_msg
+            if claimed is not None:
+                claimed.arm.release()
             goal_handle.abort(action_result)
             return
 
@@ -543,9 +571,13 @@ class PackmlNode(Node):
         action_result.error_code = error_code
         action_result.message = message
         if success:
-            goal_handle.succeed(action_result)
             self._mark_state_locally_reached(state)
+            if claimed is not None:
+                claimed.arm.release()
+            goal_handle.succeed(action_result)
         else:
+            if claimed is not None:
+                claimed.arm.release()
             goal_handle.abort(action_result)
 
     def _mark_state_locally_reached(self, state: State) -> None:

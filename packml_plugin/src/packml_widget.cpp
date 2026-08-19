@@ -338,12 +338,31 @@ void PackmlWidget::updateButtonState(std::shared_ptr<packml_msgs::srv::AllStatus
   // Only update button enabled state if it actually needs to change
   static packml_msgs::srv::AllStatus::Response last_state;
   static bool first = true;
+  // EVERY state flag, not a hand-picked few. This gate decides whether the
+  // stale enables from the previous state get cleared, so a state whose flag is
+  // missing from it inherits the previous state's buttons and offers commands
+  // the machine will reject. It listed only stopped/idle/execute/held/suspended,
+  // so EXECUTE -> ABORTING -> ABORTED tripped none of them: ABORTED kept
+  // EXECUTE's Stop/Abort/Hold/Suspend enabled and merely added its own Clear,
+  // even though Clear is the only command PackML allows out of ABORTED.
   bool state_changed = first ||
     (last_state.stopped_state != msg->stopped_state ||
      last_state.idle_state != msg->idle_state ||
+     last_state.starting_state != msg->starting_state ||
      last_state.execute_state != msg->execute_state ||
+     last_state.completing_state != msg->completing_state ||
+     last_state.complete_state != msg->complete_state ||
+     last_state.clearing_state != msg->clearing_state ||
+     last_state.suspended_state != msg->suspended_state ||
+     last_state.aborting_state != msg->aborting_state ||
+     last_state.aborted_state != msg->aborted_state ||
+     last_state.holding_state != msg->holding_state ||
      last_state.held_state != msg->held_state ||
-     last_state.suspended_state != msg->suspended_state);
+     last_state.unholding_state != msg->unholding_state ||
+     last_state.suspending_state != msg->suspending_state ||
+     last_state.unsuspending_state != msg->unsuspending_state ||
+     last_state.resetting_state != msg->resetting_state ||
+     last_state.stopping_state != msg->stopping_state);
   first = false;
   if (state_changed) {
     disableAllButtons();
