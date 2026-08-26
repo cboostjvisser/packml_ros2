@@ -32,6 +32,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -42,8 +43,6 @@
 #include <thread>
 
 #include "packml_sm/modes_config.hpp"
-// The generated mode set -- is_known_mode() is what on_change_mode() validates against.
-#include "packml_sm/default_modes.hpp"
 #include "packml_ros/detached_worker_gate.hpp"
 #include "packml_ros/deferred_completion.hpp"
 
@@ -902,6 +901,9 @@ protected:
   /// Empty when no config was supplied, in which case changeMode()'s all-open overload is the
   /// correct behaviour rather than a silent wipe. See on_change_mode()'s use of it.
   std::map<packml_sm::ModeType, packml_sm::AvailableStates> mode_masks_;
+  /// Mode values accepted by ~/changeMode. The defaults mirror packml_sm's bundled
+  /// default_modes.yaml; a deployment modes_config_file replaces them at startup.
+  std::set<packml_sm::ModeType> declared_modes_{0, 1, 2, 3};
 
   /// TODO: This should be private!
   /// Written by on_state_changed on the Qt SM thread and read by the health gate +
@@ -1561,12 +1563,12 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
       // removing every command restriction the configured modes impose until the next valid mode
       // change. A masked state that correctly refuses a command in Production would accept it.
       //
-      // The generated mode set is the authority for whether a mode EXISTS (is_known_mode(), from
-      // default_modes.hpp). Deliberately not mode_masks_: that table says which states a mode
-      // allows, and a declared mode with no configured mask is legitimate -- it means fully open,
-      // which is the documented fail-open behaviour below.
+      // The deployment's modes_config_file is the authority for whether a mode EXISTS.
+      // Deliberately not mode_masks_: that table says which states a mode allows, and a declared
+      // mode with no configured mask is legitimate -- it means fully open, which is the
+      // documented fail-open behaviour below.
       const auto requested_mode = static_cast<packml_sm::ModeType>(req->mode.val);
-      if (!packml_sm::is_known_mode(requested_mode)) {
+      if (!declared_modes_.contains(requested_mode)) {
         // static_cast<int>: mode.val is int8_t, which streams as a CHARACTER -- 99 logged as 'c'
         // and -1 as a stray byte before this cast.
         RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"),
@@ -1575,7 +1577,7 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
         res->success = false;
         res->error_code = res->INVALID_MODE_REQUEST;
         res->message = "Unknown mode " + std::to_string(req->mode.val) +
-          "; declared modes come from the generated default_modes.hpp";
+          "; declared modes come from modes_config_file (or the bundled defaults)";
         return;
       }
 
@@ -2219,10 +2221,14 @@ protected:
     const auto modes_config_path =
       node->get_parameter(packml_ros::kParamModesConfigFile).as_string();
     if (!modes_config_path.empty()) {
+      const auto configured_modes = packml_sm::parse_declared_modes(modes_config_path);
+      if (!configured_modes.empty()) {
+        declared_modes_ = configured_modes;
+      }
       mode_masks_ = packml_sm::parse_modes_config(modes_config_path);
       RCLCPP_INFO(rclcpp::get_logger("packml_ros"),
-        "[Modes] loaded %zu per-mode state mask(s) from %s",
-        mode_masks_.size(), modes_config_path.c_str());
+        "[Modes] loaded %zu declared mode(s) and %zu per-mode state mask(s) from %s",
+        declared_modes_.size(), mode_masks_.size(), modes_config_path.c_str());
     }
 
     // Keep the manager's own view of the mode in step with the state machine's, whoever

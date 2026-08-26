@@ -18,6 +18,7 @@
 
 #include <iostream>
 #include <map>
+#include <set>
 #include <string>
 
 #include <yaml-cpp/yaml.h>
@@ -25,6 +26,40 @@
 #include "packml_sm/common.hpp"
 
 namespace packml_sm {
+
+/// Parse the mode values declared by a modes YAML configuration file.
+///
+/// This is intentionally independent of state_masks: a declared mode without a
+/// mask is valid and uses the state machine's all-states-available default.
+inline std::set<ModeType>
+parse_declared_modes(const std::string & yaml_file)
+{
+  std::set<ModeType> result;
+
+  YAML::Node root;
+  try {
+    root = YAML::LoadFile(yaml_file);
+  } catch (const YAML::Exception & e) {
+    std::cerr << "[modes_config] Failed to load YAML file '" << yaml_file
+              << "': " << e.what() << std::endl;
+    return result;
+  }
+
+  if (!root["modes"] || !root["modes"].IsMap()) {
+    return result;
+  }
+
+  for (const auto & entry : root["modes"]) {
+    try {
+      result.insert(entry.second.as<ModeType>());
+    } catch (const YAML::Exception & e) {
+      std::cerr << "[modes_config] Failed to parse mode value for '"
+                << entry.first.as<std::string>() << "': " << e.what() << std::endl;
+    }
+  }
+
+  return result;
+}
 
 /// Parse a modes YAML configuration file and return per-mode state masks.
 ///
