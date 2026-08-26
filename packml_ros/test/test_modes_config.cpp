@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 #include <fstream>
+#include <set>
 #include <string>
 #include <cstdio>
 
@@ -99,6 +100,26 @@ modes:
 )");
 
   auto result = packml_sm::parse_modes_config(temp_file_);
+  EXPECT_TRUE(result.empty());
+}
+
+TEST_F(ModesConfigTest, DeclaredModesDoNotRequireStateMasks)
+{
+  write_yaml(R"(
+modes:
+  INVALID: 0
+  PRODUCTION: 1
+  CALIBRATION: 5
+  TEST: 7
+)");
+
+  const auto result = packml_sm::parse_declared_modes(temp_file_);
+  EXPECT_EQ(result, (std::set<packml_sm::ModeType>{0, 1, 5, 7}));
+}
+
+TEST_F(ModesConfigTest, MissingDeclaredModesFileReturnsEmptySet)
+{
+  const auto result = packml_sm::parse_declared_modes("/tmp/nonexistent_file_xyz123.yaml");
   EXPECT_TRUE(result.empty());
 }
 

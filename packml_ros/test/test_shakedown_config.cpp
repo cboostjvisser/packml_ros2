@@ -372,12 +372,13 @@ TEST_F(ConfigMonkeyTest, DuplicateNodeNames_DedupedFanoutCompletesCleanly)
 
 // ============================================================================
 // ATTACK: ~/changeMode with mode.val = 99, then mode.val = -1 -- values no modes YAML defines
-// (the generated packml_sm/default_modes.hpp knows Invalid=0, Production=1, Maintenance=2,
-// Manual=3 -- and its to_string() just stringifies anything else).
+// (the bundled default configuration declares Invalid=0, Production=1, Maintenance=2,
+// Manual=3).
 //
 // WHERE THE VALUE IS CHECKED, and why it has to be there: on_change_mode()
-// (packml_interface.hpp) now rejects any value is_known_mode() does not recognise, before the
-// request reaches the state machine. Nothing further down can do it. ModeType is a bare `int`
+// (packml_interface.hpp) now rejects any value its deployment configuration does not recognise
+// before the request reaches the state machine. Nothing further down can do it. ModeType is a bare
+// `int`
 // (common.hpp); StatesGenerator::mode_switcher() (states_generator.hpp) checks only that the
 // CURRENT STATE permits mode switching (switch_states == {IDLE}), never that the mode exists; and
 // StateMachine::changeMode(ModeType)'s single-argument overload builds an ALL-STATES-AVAILABLE
@@ -397,7 +398,7 @@ TEST_F(ConfigMonkeyTest, DuplicateNodeNames_DedupedFanoutCompletesCleanly)
 //
 // CONTRACT SOURCES: packml_interface.hpp on_change_mode(); packml_sm/src/state_machine.cpp
 // changeMode(); packml_sm/include/packml_sm/states_generator.hpp mode_switcher() +
-// switch_states; generated packml_sm/default_modes.hpp (is_known_mode()).
+// switch_states; PackmlManagerInterface's declared mode set.
 //
 // Was KnownDefect_UnknownModeValueAcceptedAndPropagated, a characterization test asserting the
 // accepted-and-propagated behaviour so the suite could still gate. It failed the moment the
