@@ -39,6 +39,13 @@
 
 #include "packml_sm/logging.hpp"
 
+// Included for its registration side effect, not for its constants: it publishes packml_sm's own
+// mode vocabulary so is_known_mode() answers for a program that links the library and defines no
+// modes of its own. This translation unit is used by anything that runs a state machine, which is
+// what makes the registration reliable -- a file that only held the include could be initialised
+// lazily or dropped.
+#include "packml_sm/default_modes.hpp"
+
 namespace packml_sm {
 
 bool StateMachineInterface::start() {

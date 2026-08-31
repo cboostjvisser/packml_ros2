@@ -56,10 +56,16 @@ sm->changeMode(packml_modes::Maintenance);
 std::string name = packml_sm::to_string(packml_modes::Manual);  // "Manual"
 ```
 
-Constants live in `namespace packml_modes`. The header also defines an
-`inline std::string packml_sm::to_string(ModeType)` overload so mode values print
-as their names rather than raw integers. The overload is safe to include in any order
-relative to other packml_sm headers.
+Constants live in `namespace packml_modes`. Including the header anywhere in a program
+also *registers* its modes with `packml_sm`, which is what makes these two work:
+
+```cpp
+packml_sm::to_string(packml_modes::Manual);   // "Manual" rather than "3"
+packml_sm::is_known_mode(7);                  // true only if some header declared 7
+```
+
+Both are ordinary functions in `packml_sm/modes_registry.hpp`, pulled in by `common.hpp`,
+so they are visible wherever `ModeType` is and do not depend on include order.
 
 ### 4. Use in Python (optional)
 
@@ -123,17 +129,54 @@ After install (with the `install()` calls above):
 
 #include <string>
 #include "packml_sm/common.hpp"
+#include "packml_sm/modes_registry.hpp"
 
 namespace packml_modes {
   constexpr packml_sm::ModeType Invalid     = 0;
   constexpr packml_sm::ModeType Production  = 1;
   constexpr packml_sm::ModeType Maintenance = 2;
   constexpr packml_sm::ModeType Manual      = 3;
-}  // namespace packml_modes
 
-namespace packml_sm {
-  inline std::string to_string(ModeType mode) { /* switch ... */ }
-}  // namespace packml_sm
+  namespace detail {
+    inline const bool kModesRegistered_A1B2C3D4 = packml_sm::register_modes({
+      {"Invalid", 0}, {"Production", 1}, {"Maintenance", 2}, {"Manual", 3},
+    });
+  }  // namespace detail
+}  // namespace packml_modes
+```
+
+The registration is what a header contributes beyond its constants, and it is
+deliberately not a `packml_sm::is_known_mode()` of the header's own. That function and
+`to_string()` are shared symbols: a second generated header defining them is a
+redefinition, and any *public* header that included one would impose its mode values on
+every downstream consumer. Registering instead lets several vocabularies coexist, and lets
+`packml_ros` validate a mode it cannot know at compile time.
+
+Registration order across headers is unspecified, so a value declared twice under different
+names keeps whichever registered last and reports the disagreement on stderr. Only the name
+is affected — `is_known_mode()` answers true either way.
+
+
+## Validating a mode
+
+`packml_ros`'s `~/changeMode` refuses any value nothing declared, before it reaches the state
+machine, because an unrecognised mode arrives with no state mask and silently removes every
+command restriction the declared modes impose. It asks, in order:
+
+1. the modes a deployment's `modes_config_file` declares, when it declares any — the narrower
+   and more specific statement, since a program may link a vocabulary far wider than the
+   machine in front of it is commissioned for;
+2. otherwise `packml_sm::is_known_mode()`, the vocabulary of the generated headers linked in.
+
+So a deployment can declare modes in YAML alone, with no code generation at all:
+
+```yaml
+# The spec's CLEAN and EMPTY OUT, which packml_sm's bundled set does not carry.
+modes:
+  Invalid: 0
+  Production: 1
+  Clean: 5
+  EmptyOut: 7
 ```
 
 
@@ -173,5 +216,10 @@ Include it as:
 #include "packml_sm/default_modes.hpp"
 ```
 
-This is the header used by `packml_ros` tests and examples. Projects that define their
-own modes should **not** include this header — use their own generated header instead.
+`packml_sm`'s library registers this set itself, so a program that links it and declares
+nothing of its own still has those four modes to validate against.
+
+Projects that define their own modes should **not** include this header — use their own
+generated header instead. The two declare the same names in `namespace packml_modes`, so
+including both in one translation unit is a redefinition. No `packml_ros` header includes
+it, so this only happens if a project reaches for it deliberately.

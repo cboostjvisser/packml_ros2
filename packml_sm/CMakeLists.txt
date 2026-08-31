@@ -153,6 +153,7 @@ if(BUILD_TESTING)
     test/test_state_transitions.cpp
     test/test_commands.cpp
     test/test_modes.cpp
+    test/test_modes_registry.cpp
     test/test_errors.cpp
     test/test_event_identity.cpp
     test/test_command_bridge.cpp

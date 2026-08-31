@@ -24,6 +24,10 @@
 #include <type_traits>
 #include <vector>
 
+// Brings in ModeType and, with it, the to_string(ModeType) overload that must outrank the generic
+// to_string<T> below at every call site.
+#include "packml_sm/modes_registry.hpp"
+
 namespace packml_sm
 {
 
@@ -221,10 +225,6 @@ inline std::mutex & mode_mask_mutex()
   static std::mutex mask_mutex;
   return mask_mutex;
 }
-
-// ModeType is an alias for int, allowing user-defined mode values via
-// the packml_sm_generate_modes CMake function.
-using ModeType = int;
 
 template<typename T>
 std::string to_string(T mode) {

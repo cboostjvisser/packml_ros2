@@ -64,41 +64,27 @@ def generate_modes_header(yaml_file, output_file):
         f.write(f'#ifndef {header_guard}_\n')
         f.write(f'#define {header_guard}_\n\n')
         f.write('#include <string>\n')
-        f.write('#include "packml_sm/common.hpp"\n\n')
+        f.write('#include "packml_sm/common.hpp"\n')
+        f.write('#include "packml_sm/modes_registry.hpp"\n\n')
         f.write('namespace packml_modes {\n\n')
         for name, value in modes.items():
             f.write(f'constexpr packml_sm::ModeType {name} = {value};\n')
+        f.write('\n')
+        # The names and values are handed to packml_sm rather than compiled into a
+        # packml_sm::is_known_mode() / to_string() of this header's own. Those are shared
+        # symbols: a second generated header defining them is a redefinition, and any public
+        # header that included one of them would impose its mode values on every consumer.
+        # Registering instead lets several vocabularies coexist and lets packml_ros validate a
+        # mode it could not know at compile time. The suffix keeps the variable itself unique.
+        f.write('namespace detail {\n')
+        f.write('/// Publishes the modes above to packml_sm::is_known_mode() and\n')
+        f.write('/// packml_sm::to_string(), for as long as this header is linked in.\n')
+        f.write(f'inline const bool kModesRegistered_{path_hash} = packml_sm::register_modes({{\n')
+        for name, value in modes.items():
+            f.write(f'  {{"{name}", {value}}},\n')
+        f.write('});\n')
+        f.write('}  // namespace detail\n')
         f.write('\n}  // namespace packml_modes\n\n')
-        f.write('namespace packml_sm {\n\n')
-        # Use a non-template overload rather than a template specialization.
-        # Overloads do not require a specific include order relative to any
-        # implicit instantiation of to_string<ModeType>, making this header
-        # safe to include at any position.
-        f.write('inline std::string to_string(ModeType mode)\n')
-        f.write('{\n')
-        f.write('  switch (mode) {\n')
-        for name, value in modes.items():
-            f.write(f'      case {value}: return "{name}";\n')
-        f.write('    default: return std::to_string(mode);\n')
-        f.write('  }\n')
-        f.write('}\n\n')
-        # The C++ side had no way to ask "is this a mode at all", while the Python module has
-        # emitted ALL_MODES from the start. Without it, callers either trusted the number or
-        # abused to_string() (which stringifies an unknown value rather than failing), and
-        # ModeType is a bare int, so nothing else stops a wrong one.
-        f.write('/// Is `mode` one of the modes declared in the YAML this header was generated\n')
-        f.write('/// from? Note a declared sentinel such as Invalid answers true -- this asks\n')
-        f.write('/// whether the value is KNOWN, not whether it is a sensible thing to '
-                'switch to.\n')
-        f.write('inline bool is_known_mode(ModeType mode)\n')
-        f.write('{\n')
-        f.write('  switch (mode) {\n')
-        for name, value in modes.items():
-            f.write(f'      case {value}: return true;   // {name}\n')
-        f.write('    default: return false;\n')
-        f.write('  }\n')
-        f.write('}\n')
-        f.write('\n}  // namespace packml_sm\n\n')
         f.write(f'#endif  // {header_guard}_\n')
 
     return modes
