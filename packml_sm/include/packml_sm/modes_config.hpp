@@ -26,6 +26,51 @@
 
 namespace packml_sm {
 
+namespace detail {
+
+/// Read the "modes" mapping (name -> value) out of an already-loaded document.
+inline std::map<std::string, ModeType>
+declared_modes_of(const YAML::Node & root)
+{
+  std::map<std::string, ModeType> modes;
+  if (!root["modes"] || !root["modes"].IsMap()) {
+    return modes;
+  }
+  for (const auto & entry : root["modes"]) {
+    try {
+      modes[entry.first.as<std::string>()] = entry.second.as<ModeType>();
+    } catch (const YAML::Exception & e) {
+      std::cerr << "[modes_config] Failed to parse mode value for '"
+                << entry.first.as<std::string>() << "': " << e.what() << std::endl;
+    }
+  }
+  return modes;
+}
+
+}  // namespace detail
+
+/// Parse the modes a YAML configuration file declares, as name -> value.
+///
+/// Deliberately independent of "state_masks": that section says which states a mode allows, and a
+/// declared mode with no mask is legitimate -- it means fully open. So a file may declare modes and
+/// mask none of them.
+///
+/// @param yaml_file  Path to the YAML configuration file.
+/// @return           The declared modes. Empty if the file cannot be opened or declares none.
+inline std::map<std::string, ModeType>
+parse_declared_modes(const std::string & yaml_file)
+{
+  YAML::Node root;
+  try {
+    root = YAML::LoadFile(yaml_file);
+  } catch (const YAML::Exception & e) {
+    std::cerr << "[modes_config] Failed to load YAML file '" << yaml_file
+              << "': " << e.what() << std::endl;
+    return {};
+  }
+  return detail::declared_modes_of(root);
+}
+
 /// Parse a modes YAML configuration file and return per-mode state masks.
 ///
 /// The YAML file must contain a top-level "modes" mapping (name -> int value)
@@ -76,19 +121,7 @@ parse_modes_config(const std::string & yaml_file)
     return result;
   }
 
-  // Parse mode names -> integer values.
-  std::map<std::string, ModeType> mode_values;
-  if (root["modes"] && root["modes"].IsMap()) {
-    for (const auto & entry : root["modes"]) {
-      try {
-        mode_values[entry.first.as<std::string>()] =
-          entry.second.as<ModeType>();
-      } catch (const YAML::Exception & e) {
-        std::cerr << "[modes_config] Failed to parse mode value for '"
-                  << entry.first.as<std::string>() << "': " << e.what() << std::endl;
-      }
-    }
-  }
+  const auto mode_values = detail::declared_modes_of(root);
 
   // Parse per-mode state masks.
   if (!root["state_masks"] || !root["state_masks"].IsMap()) {

@@ -32,6 +32,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -42,8 +43,10 @@
 #include <thread>
 
 #include "packml_sm/modes_config.hpp"
-// The generated mode set -- is_known_mode() is what on_change_mode() validates against.
-#include "packml_sm/default_modes.hpp"
+// is_known_mode() -- what on_change_mode() validates against when the deployment declared no
+// modes of its own. Deliberately NOT a generated modes header: including one here would impose
+// its mode values on every consumer of this header and collide with the consumer's own.
+#include "packml_sm/modes_registry.hpp"
 #include "packml_ros/detached_worker_gate.hpp"
 #include "packml_ros/deferred_completion.hpp"
 
@@ -903,6 +906,11 @@ protected:
   /// correct behaviour rather than a silent wipe. See on_change_mode()'s use of it.
   std::map<packml_sm::ModeType, packml_sm::AvailableStates> mode_masks_;
 
+  /// Mode values a deployment's modes_config_file declared, which narrow what ~/changeMode will
+  /// accept. Empty when no config declared any, in which case is_known_mode() -- the vocabulary of
+  /// whatever generated modes headers this program links -- is the authority instead.
+  std::set<packml_sm::ModeType> declared_modes_;
+
   /// TODO: This should be private!
   /// Written by on_state_changed on the Qt SM thread and read by the health gate +
   /// publish_status on the ROS executor thread → atomic so the gate never reads a
@@ -1561,12 +1569,21 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
       // removing every command restriction the configured modes impose until the next valid mode
       // change. A masked state that correctly refuses a command in Production would accept it.
       //
-      // The generated mode set is the authority for whether a mode EXISTS (is_known_mode(), from
-      // default_modes.hpp). Deliberately not mode_masks_: that table says which states a mode
-      // allows, and a declared mode with no configured mask is legitimate -- it means fully open,
-      // which is the documented fail-open behaviour below.
+      // Two authorities for whether a mode EXISTS, in that order. A modes_config_file that
+      // declares modes wins, because it is the narrower and more specific statement: a program
+      // may link a mode vocabulary far wider than the machine in front of it is commissioned for,
+      // and accepting the surplus is what leaves a mode running with no mask. Where no config
+      // declared any, is_known_mode() answers from the vocabulary of the generated modes headers
+      // this program links.
+      //
+      // Deliberately not mode_masks_: that table says which states a mode allows, and a declared
+      // mode with no configured mask is legitimate -- it means fully open, which is the documented
+      // fail-open behaviour below.
       const auto requested_mode = static_cast<packml_sm::ModeType>(req->mode.val);
-      if (!packml_sm::is_known_mode(requested_mode)) {
+      const bool mode_exists = declared_modes_.empty()
+        ? packml_sm::is_known_mode(requested_mode)
+        : declared_modes_.count(requested_mode) != 0;
+      if (!mode_exists) {
         // static_cast<int>: mode.val is int8_t, which streams as a CHARACTER -- 99 logged as 'c'
         // and -1 as a stray byte before this cast.
         RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"),
@@ -1575,7 +1592,9 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
         res->success = false;
         res->error_code = res->INVALID_MODE_REQUEST;
         res->message = "Unknown mode " + std::to_string(req->mode.val) +
-          "; declared modes come from the generated default_modes.hpp";
+          (declared_modes_.empty()
+            ? "; declared modes come from the generated modes header this program links"
+            : "; declared modes come from modes_config_file");
         return;
       }
 
@@ -2219,10 +2238,32 @@ protected:
     const auto modes_config_path =
       node->get_parameter(packml_ros::kParamModesConfigFile).as_string();
     if (!modes_config_path.empty()) {
+      const auto declared = packml_sm::parse_declared_modes(modes_config_path);
+      for (const auto & [name, value] : declared) {
+        declared_modes_.insert(value);
+      }
+      // Registering gives the deployment's own names to every to_string(ModeType) in the process,
+      // including for modes no generated header knows. It happens long after static
+      // initialisation, so these names win over any a linked modes header registered.
+      packml_sm::register_modes(declared);
+
       mode_masks_ = packml_sm::parse_modes_config(modes_config_path);
-      RCLCPP_INFO(rclcpp::get_logger("packml_ros"),
-        "[Modes] loaded %zu per-mode state mask(s) from %s",
-        mode_masks_.size(), modes_config_path.c_str());
+
+      if (declared.empty()) {
+        RCLCPP_WARN(rclcpp::get_logger("packml_ros"),
+          "[Modes] %s declared no modes; ~/changeMode keeps validating against the %zu mode(s) "
+          "this program links", modes_config_path.c_str(), packml_sm::known_modes().size());
+      } else {
+        RCLCPP_INFO(rclcpp::get_logger("packml_ros"),
+          "[Modes] loaded %zu declared mode(s) and %zu per-mode state mask(s) from %s",
+          declared_modes_.size(), mode_masks_.size(), modes_config_path.c_str());
+      }
+    }
+
+    if (declared_modes_.empty() && packml_sm::known_modes().empty()) {
+      RCLCPP_ERROR(rclcpp::get_logger("packml_ros"),
+        "[Modes] no modes are declared, so ~/changeMode will reject every request. Link a header "
+        "from packml_sm_generate_modes() or point modes_config_file at a file declaring them.");
     }
 
     // Keep the manager's own view of the mode in step with the state machine's, whoever

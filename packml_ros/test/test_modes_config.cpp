@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 #include <fstream>
+#include <map>
 #include <string>
 #include <cstdio>
 
@@ -82,6 +83,42 @@ state_masks:
   EXPECT_TRUE(manual_mask[packml_sm::State::IDLE]);
   EXPECT_TRUE(manual_mask[packml_sm::State::EXECUTE]);
   EXPECT_TRUE(manual_mask[packml_sm::State::STOPPED]);
+}
+
+TEST_F(ModesConfigTest, DeclaredModesDoNotRequireStateMasks)
+{
+  // A mode declared with no mask is legitimate -- it means fully open -- so the declaration and
+  // the mask table have to be readable independently of one another.
+  write_yaml(R"(
+modes:
+  Invalid: 0
+  Production: 1
+  Clean: 5
+  EmptyOut: 7
+)");
+
+  const auto declared = packml_sm::parse_declared_modes(temp_file_);
+
+  const std::map<std::string, packml_sm::ModeType> expected{
+    {"Invalid", 0}, {"Production", 1}, {"Clean", 5}, {"EmptyOut", 7}};
+  EXPECT_EQ(declared, expected);
+  EXPECT_TRUE(packml_sm::parse_modes_config(temp_file_).empty());
+}
+
+TEST_F(ModesConfigTest, MissingDeclaredModesFileReturnsEmptyMap)
+{
+  EXPECT_TRUE(packml_sm::parse_declared_modes("/tmp/nonexistent_file_xyz123.yaml").empty());
+}
+
+TEST_F(ModesConfigTest, AFileWithNoModesSectionDeclaresNothing)
+{
+  write_yaml(R"(
+state_masks:
+  PRODUCTION:
+    HOLDING: false
+)");
+
+  EXPECT_TRUE(packml_sm::parse_declared_modes(temp_file_).empty());
 }
 
 TEST_F(ModesConfigTest, MissingFileReturnsEmptyMap)

@@ -219,3 +219,75 @@ TEST(ManagerModeMaskPersistence, ConfiguredMaskStillAppliesAfterRuntimeModeChang
 
   std::remove(yaml_path.c_str());
 }
+
+// ============================================================================
+// A deployment declares its own mode vocabulary in modes_config_file. Those values are the ones
+// ~/changeMode must accept -- including values packml_sm's bundled vocabulary has never heard of
+// (the spec's CLEAN is 5, EMPTY OUT is 7) -- and the bundled values the deployment did NOT declare
+// must be refused, because an undeclared mode arrives with no mask and silently removes every
+// command restriction the declared ones impose.
+// ============================================================================
+TEST(ManagerDeclaredModes, DeploymentVocabularyReplacesTheLinkedOne)
+{
+  const std::string yaml_path = "/tmp/packml_ros_test_declared_modes.yaml";
+  {
+    std::ofstream f(yaml_path);
+    f << "modes:\n"
+      << "  Invalid: 0\n"
+      << "  Production: 1\n"
+      << "  Clean: 5\n"
+      << "  EmptyOut: 7\n";
+  }
+
+  const auto node_name = packml_ros_test::unique_node_name("mgr_declared_modes");
+  auto node = rclcpp::Node::make_shared(node_name,
+    rclcpp::NodeOptions().parameter_overrides({
+      rclcpp::Parameter(packml_ros::kParamModesConfigFile, yaml_path),
+      rclcpp::Parameter(packml_ros::kParamInitialMode, 1),
+    }));
+  auto sm_node = std::make_unique<SMNode_new>(node);
+
+  auto mode_client = node->create_client<packml_msgs::srv::ModeChange>(node_name + "/changeMode");
+  auto state_client = node->create_client<packml_msgs::srv::StateChange>(
+    node_name + "/changeState");
+  packml_ros_test::SpinHelper spinner(node);
+  ASSERT_TRUE(mode_client->wait_for_service(5s));
+  ASSERT_TRUE(state_client->wait_for_service(5s));
+  std::this_thread::sleep_for(500ms);
+
+  auto send_mode = [&](int8_t val) {
+      auto req = std::make_shared<packml_msgs::srv::ModeChange::Request>();
+      req->mode.val = val;
+      auto fut = mode_client->async_send_request(req);
+      return fut.wait_for(5s) == std::future_status::ready ? fut.get() : nullptr;
+    };
+
+  // Reach IDLE, the only state a mode change is permitted from.
+  auto reset_req = std::make_shared<packml_msgs::srv::StateChange::Request>();
+  reset_req->command = packml_msgs::srv::StateChange::Request::RESET;
+  auto reset_fut = state_client->async_send_request(reset_req);
+  ASSERT_EQ(reset_fut.wait_for(5s), std::future_status::ready);
+  ASSERT_TRUE(reset_fut.get()->success);
+  std::this_thread::sleep_for(400ms);
+
+  // Declared but outside packml_sm's bundled vocabulary: this is the case the bundled
+  // is_known_mode() could never have accepted.
+  auto clean = send_mode(5);
+  ASSERT_NE(clean, nullptr);
+  EXPECT_TRUE(clean->success) << "declared mode 5 (Clean) rejected: " << clean->message;
+
+  // In the bundled vocabulary as Maintenance, but this deployment never declared it.
+  auto maintenance = send_mode(2);
+  ASSERT_NE(maintenance, nullptr);
+  EXPECT_FALSE(maintenance->success)
+    << "mode 2 was accepted although modes_config_file declares only 0, 1, 5 and 7 -- an "
+       "undeclared mode reaches changeMode()'s all-open overload and wipes the configured masks";
+  EXPECT_EQ(maintenance->error_code, packml_msgs::srv::ModeChange::Response::INVALID_MODE_REQUEST);
+
+  // Undeclared by anyone, either way.
+  auto nonsense = send_mode(99);
+  ASSERT_NE(nonsense, nullptr);
+  EXPECT_FALSE(nonsense->success);
+
+  std::remove(yaml_path.c_str());
+}
