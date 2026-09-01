@@ -25,6 +25,7 @@ single-source-of-truth behaviour between C++ and Python nodes.
 
 import threading
 import time
+import traceback
 
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -430,9 +431,24 @@ class PackmlNode(Node):
         # defers_completion() is a static, state-shape answer (does this node defer THIS state at
         # all), not a per-request decision, so asking it here costs nothing. Computing it even
         # when the transition is about to be rejected below is harmless -- it is simply unused.
-        will_defer = result.accepted and self.defers_completion(target)
+        # Exceptions from either subclass hook release the claim arm and abort the goal.
+        # This permits subsequent goals and gives the manager an immediate result.
+        try:
+            will_defer = result.accepted and self.defers_completion(target)
+            approved = result.accepted and self.on_state_transition_request(target)
+        except Exception:
+            claimed.arm.release()
+            error_msg = f'Node hook raised handling the {target.name} transition'
+            self.get_logger().error(f'{error_msg}:\n{traceback.format_exc()}')
+            action_result = StateTransitionAction.Result()
+            action_result.success = False
+            action_result.error_code = StateTransitionAction.Result.INVALID_STATE_REQUEST
+            action_result.message = error_msg
+            goal_handle.executing()
+            goal_handle.abort(action_result)
+            return
 
-        if not (result.accepted and self.on_state_transition_request(target)):
+        if not approved:
             claimed.arm.release()
             error_msg = 'Node rejected state transition'
             self.get_logger().warn(error_msg)
@@ -464,7 +480,21 @@ class PackmlNode(Node):
         # dispatches the node's own commanded work, and the work has to be under way before the
         # manager's status echo can arrive. Reporting from inside the hook is fine -- the record
         # already exists, so an instant report is simply already there when the wait below starts.
-        self.on_deferred_work(target, DeferredCompletion(deferral, self.get_logger()))
+        # An exception from the dispatch hook releases the arm and aborts the goal;
+        # no deferred wait is started without a completion report source.
+        try:
+            self.on_deferred_work(target, DeferredCompletion(deferral, self.get_logger()))
+        except Exception:
+            claimed.arm.release()
+            error_msg = f'on_deferred_work() raised dispatching {target.name}'
+            self.get_logger().error(f'{error_msg}:\n{traceback.format_exc()}')
+            action_result = StateTransitionAction.Result()
+            action_result.success = False
+            action_result.error_code = StateTransitionAction.Result.INVALID_STATE_REQUEST
+            action_result.message = error_msg
+            goal_handle.executing()
+            goal_handle.abort(action_result)
+            return
 
         # Deferred: hand off to a background thread that only waits for that report -- the one
         # part of this that can legitimately take a long time.

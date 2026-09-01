@@ -387,6 +387,12 @@ public:
   ModeType getCurrentMode() const;
 
   /**
+  * @brief Configures the mode that mode_switcher() admits from ABORTED.
+  *        The generator's kNoManualMode sentinel disables this exception.
+  */
+  void set_manual_mode(ModeType mode);
+
+  /**
   * @brief Returns the AvailableStates mask that was applied with the most
   *        recent successful changeMode() call.  Same storage and same lock as
   *        getCurrentMode().

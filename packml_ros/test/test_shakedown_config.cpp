@@ -409,14 +409,8 @@ TEST_F(ConfigMonkeyTest, UnknownModeValueRejectedAndNeverPropagated)
   auto em = std::make_shared<ModeRecordingEquipmentModule>(rig.em_node);
   finish_setup(rig);
 
-  // Mode changes are only valid from IDLE (switch_states, states_generator.hpp) -- get there
-  // first so a rejection below can only be about the mode VALUE, never the state.
-  auto reset_resp = send_state_change(rig.state_client, packml_msgs::srv::StateChange::Request::RESET);
-  ASSERT_NE(reset_resp, nullptr);
-  ASSERT_TRUE(reset_resp->success) << "RESET rejected: " << reset_resp->message;
-  ASSERT_TRUE(wait_for_state(rig.sm_node, packml_sm::State::IDLE, 2s))
-    << "machine did not reach IDLE before the mode probes";
-
+  // The machine starts in STOPPED, a valid state for runtime mode changes. Any
+  // rejection below therefore concerns the requested mode value.
   auto mode_client = rig.mgr_node->create_client<packml_msgs::srv::ModeChange>(
     rig.mgr_name + "/" + packml_ros::kChangeModeService);
   ASSERT_TRUE(mode_client->wait_for_service(5s));

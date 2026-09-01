@@ -155,9 +155,9 @@ private:
 };
 
 /// EM whose ~/packml_mode_transition service handler is unreliable: optionally sleeps before
-/// responding (simulating a node barely keeping up) and/or rejects outright. Its own
-/// state-transition handling stays perfectly normal (PlainEquipmentModule-like) so it never
-/// blocks the machine reaching IDLE, the only state mode changes are valid from.
+/// responding (simulating a node barely keeping up) and/or rejects outright. Its
+/// state-transition handler accepts and completes goals immediately, isolating the
+/// mode-transition failure behavior.
 class ModeMonkeyEquipmentModule : public PackmlNodeInterface
 {
 public:
@@ -361,13 +361,7 @@ TEST_F(MonkeyMultiModeTest, ModeMonkeySlowEM_DoesNotBlockChangeModeAndReportsFan
   slow_em->mode_delay = 6s;
   finish_setup(rig);
 
-  auto reset_resp =
-    send_state_change(rig.state_client, packml_msgs::srv::StateChange::Request::RESET);
-  ASSERT_NE(reset_resp, nullptr);
-  ASSERT_TRUE(reset_resp->success);
-  ASSERT_TRUE(wait_for_state(rig.sm_node, packml_sm::State::IDLE, 1s))
-    << "machine did not reach IDLE before the mode change";
-
+  // The state machine starts in STOPPED, which permits runtime mode changes.
   auto mode_client = rig.mgr_node->create_client<packml_msgs::srv::ModeChange>(
     rig.mgr_name + "/changeMode");
   ASSERT_TRUE(mode_client->wait_for_service(5s));
@@ -457,13 +451,7 @@ TEST_F(MonkeyMultiModeTest, ModeMonkeyRejectingEM_DoesNotBlockChangeModeAndRepor
   reject_em->reject_mode.store(true);
   finish_setup(rig);
 
-  auto reset_resp =
-    send_state_change(rig.state_client, packml_msgs::srv::StateChange::Request::RESET);
-  ASSERT_NE(reset_resp, nullptr);
-  ASSERT_TRUE(reset_resp->success);
-  ASSERT_TRUE(wait_for_state(rig.sm_node, packml_sm::State::IDLE, 1s))
-    << "machine did not reach IDLE before the mode change";
-
+  // The state machine starts in STOPPED, which permits runtime mode changes.
   auto mode_client = rig.mgr_node->create_client<packml_msgs::srv::ModeChange>(
     rig.mgr_name + "/changeMode");
   ASSERT_TRUE(mode_client->wait_for_service(5s));
@@ -686,25 +674,16 @@ TEST_F(MonkeyMultiModeTest, ClientDisconnectMidRequest_ManagerStaysResponsiveAft
 }
 
 // ============================================================================
-// Confirmed-safe: mirrors MonkeyCommandFlood_ManagerSurvivesAndStaysResponsive in
-// test_monkey_scenarios.cpp, but for ~/changeMode instead of ~/changeState -- with the machine
-// held at IDLE (mode changes are only valid from IDLE), fire many mode-change requests
-// back-to-back with different mode values, without waiting for any response between sends.
-// Every request must eventually resolve (no silent drops, no hangs), and the manager must
-// answer a clean follow-up mode-change request normally afterward.
+// Send mode-change requests with different values back-to-back from STOPPED without
+// waiting between sends. Every request resolves, and the manager accepts a follow-up
+// mode change after the flood.
 TEST_F(MonkeyMultiModeTest, ModeChangeFlood_ManagerSurvivesAndStaysResponsive)
 {
   auto rig = begin_setup("monkey_mode_flood", {"mode_flood_em"});
   auto em = std::make_shared<PlainEquipmentModule>(rig.em_nodes[0]);
   finish_setup(rig);
 
-  auto reset_resp =
-    send_state_change(rig.state_client, packml_msgs::srv::StateChange::Request::RESET);
-  ASSERT_NE(reset_resp, nullptr);
-  ASSERT_TRUE(reset_resp->success);
-  ASSERT_TRUE(wait_for_state(rig.sm_node, packml_sm::State::IDLE, 1s))
-    << "machine did not reach IDLE before the mode-change flood";
-
+  // The state machine starts in STOPPED, which permits the mode-change flood.
   auto mode_client = rig.mgr_node->create_client<packml_msgs::srv::ModeChange>(
     rig.mgr_name + "/changeMode");
   ASSERT_TRUE(mode_client->wait_for_service(5s));
@@ -783,12 +762,7 @@ TEST_F(MonkeyMultiModeTest, ModeChangeThenImmediateTeardownDrainsItsFanoutThread
       rig.mgr_name + "/changeMode");
     ASSERT_TRUE(mode_client->wait_for_service(5s)) << "attempt " << attempt;
 
-    // Mode changes are only valid from IDLE.
-    auto reset_resp = send_state_change(
-      rig.state_client, packml_msgs::srv::StateChange::Request::RESET);
-    ASSERT_NE(reset_resp, nullptr) << "attempt " << attempt;
-    ASSERT_TRUE(wait_for_state(rig.sm_node, packml_sm::State::IDLE, 2s)) << "attempt " << attempt;
-
+    // The state machine starts in STOPPED, which permits runtime mode changes.
     auto req = std::make_shared<packml_msgs::srv::ModeChange::Request>();
     req->mode.val = static_cast<int8_t>(packml_modes::Maintenance);
     auto future = mode_client->async_send_request(req);

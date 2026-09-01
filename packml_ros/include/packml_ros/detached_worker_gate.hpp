@@ -19,7 +19,8 @@
 #include <condition_variable>
 #include <mutex>
 
-namespace packml_ros {
+namespace packml_ros
+{
 
 /// Counts the detached threads that are currently inside an object, so that object can refuse to
 /// finish being destroyed while one of them is still using it.

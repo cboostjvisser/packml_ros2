@@ -2192,10 +2192,11 @@ protected:
     // manual_mode_allows_health_bypass=true AND manual_mode=<the manual mode value> to let an
     // operator command RESET past an EM ERROR for diagnostics.
     //
-    // ADMISSION ONLY, and incomplete as a feature: the bypass reaches the gate below, not the
-    // coordinated-completion cross-check, which reads HealthMonitor::is_node_healthy() and is
-    // hardcoded to the non-bypassed answer. RESET is therefore accepted and RESETTING then aborts
-    // on the same node. See is_node_healthy()'s own comment for what closing this requires.
+    // The health bypass affects RESET admission only. During coordinated completion,
+    // HealthMonitor::is_node_healthy() checks heartbeat liveness without applying
+    // actionable-error policy.
+    // Runtime mode switches are allowed from STOPPED, and from ABORTED when the target is the
+    // manual_mode configured below.
     if (!node->has_parameter(packml_ros::kParamManualModeAllowsHealthBypass)) {
       node->declare_parameter(packml_ros::kParamManualModeAllowsHealthBypass, false);
     }
@@ -2210,6 +2211,9 @@ protected:
     manual_mode_allows_health_bypass_ =
       node->get_parameter(packml_ros::kParamManualModeAllowsHealthBypass).as_bool();
     health_bypass_mode_ = node->get_parameter(packml_ros::kParamManualMode).as_int();
+    // manual_mode identifies the mode admitted from ABORTED. The default value, -1,
+    // disables this mode-entry exception.
+    sm_->set_manual_mode(health_bypass_mode_);
 
     // Optional startup grace period: how long to wait before timing out a
     // node that has not yet sent its first heartbeat.  Default 30 s.
@@ -2266,14 +2270,9 @@ protected:
         "from packml_sm_generate_modes() or point modes_config_file at a file declaring them.");
     }
 
-    // Keep the manager's own view of the mode in step with the state machine's, whoever
-    // changed it. Without this the boot changeMode() (issued by SMNode_new AFTER this init()
-    // returns) never reached the manager: current_mode stayed 0 while the machine really was
-    // in the configured initial_mode, the published Status reported 0, and the health-gate
-    // bypass predicate -- which compares against this atomic -- could never match a
-    // configured manual mode. That was a closed deadlock: the only other writer of this
-    // atomic is ~/changeMode, which mode_switcher() permits only from IDLE, which the gate
-    // was blocking. Preserves the state machine's own default log line.
+    // Mirror each state-machine mode change into the manager's atomic snapshot.
+    // publish_status() and health-bypass admission both read current_mode. The
+    // callback also emits the standard mode-change log.
     sm->on_mode_changed = [this](packml_sm::ModeType value) {
         PACKML_INFO_STREAM("packml_sm", "Default callback; Mode changed to: " << value);
         current_mode.store(value);

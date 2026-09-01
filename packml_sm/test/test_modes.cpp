@@ -36,6 +36,7 @@ using packml_sm::State;
 using packml_sm_test::wait_for_state;
 using packml_sm_test::execute_success_long;
 using packml_sm_test::drive_to_idle;
+using packml_sm_test::install_mode_then_idle;
 
 namespace
 {
@@ -68,31 +69,75 @@ TEST(Modes, ChangeModeFromUninitializedSucceeds)
 {
   auto sm = fresh_sm();
   ASSERT_TRUE(wait_for_state(*sm, State::STOPPED));
-  // Cold-start: currentMode.name is empty -> mode switch allowed even outside IDLE.
+  // Cold-start: currentMode.name is empty -> the boot-time selection skips the state gate.
   auto rc = sm->changeMode(packml_modes::Production);
   EXPECT_TRUE(rc.has_value()) << (rc.has_value() ? "" : rc.error());
   sm->deactivate();
 }
 
-TEST(Modes, ChangeModeOutsideIdleIsRejectedAfterInit)
+TEST(Modes, RuntimeChangeModeFromStoppedSucceeds)
 {
   auto sm = fresh_sm();
   ASSERT_TRUE(wait_for_state(*sm, State::STOPPED));
   // First switch establishes currentMode.
   ASSERT_TRUE(sm->changeMode(packml_modes::Production).has_value());
-  // Still in STOPPED — second switch must be rejected.
+  // STOPPED permits the second runtime mode switch.
   auto rc = sm->changeMode(packml_modes::Maintenance);
-  EXPECT_FALSE(rc.has_value())
-    << "PackML: mode switch only permitted from IDLE (per StatesGenerator::switch_states).";
+  EXPECT_TRUE(rc.has_value()) << (rc.has_value() ? "" : rc.error());
   sm->deactivate();
 }
 
-TEST(Modes, ChangeModeFromIdleSucceeds)
+TEST(Modes, RuntimeChangeModeFromIdleIsRejected)
 {
   auto sm = fresh_sm();
   ASSERT_TRUE(drive_to_idle(*sm));
+  // Runtime mode changes are accepted only from STOPPED, except that ABORTED may select
+  // the configured Manual mode. drive_to_idle() already selected a mode, so this is runtime.
   auto rc = sm->changeMode(packml_modes::Maintenance);
+  EXPECT_FALSE(rc.has_value())
+    << "a runtime mode switch from IDLE must be refused per StatesGenerator::switch_states";
+  sm->deactivate();
+}
+
+TEST(Modes, ManualModeFromAbortedSucceeds)
+{
+  auto sm = fresh_sm();
+  ASSERT_TRUE(wait_for_state(*sm, State::STOPPED));
+  sm->set_manual_mode(packml_modes::Manual);
+  ASSERT_TRUE(sm->changeMode(packml_modes::Production).has_value());
+  ASSERT_TRUE(sm->abort());
+  ASSERT_TRUE(wait_for_state(*sm, State::ABORTED));
+  // ABORTED admits the configured manual mode.
+  auto rc = sm->changeMode(packml_modes::Manual);
   EXPECT_TRUE(rc.has_value()) << (rc.has_value() ? "" : rc.error());
+  sm->deactivate();
+}
+
+TEST(Modes, NonManualModeFromAbortedIsRejected)
+{
+  auto sm = fresh_sm();
+  ASSERT_TRUE(wait_for_state(*sm, State::STOPPED));
+  sm->set_manual_mode(packml_modes::Manual);
+  ASSERT_TRUE(sm->changeMode(packml_modes::Production).has_value());
+  ASSERT_TRUE(sm->abort());
+  ASSERT_TRUE(wait_for_state(*sm, State::ABORTED));
+  auto rc = sm->changeMode(packml_modes::Maintenance);
+  EXPECT_FALSE(rc.has_value())
+    << "ABORTED admits only the configured Manual mode, not an arbitrary switch";
+  sm->deactivate();
+}
+
+TEST(Modes, ManualModeFromAbortedRequiresItToBeConfigured)
+{
+  auto sm = fresh_sm();
+  ASSERT_TRUE(wait_for_state(*sm, State::STOPPED));
+  // The kNoManualMode sentinel disables mode changes from ABORTED.
+  ASSERT_TRUE(sm->changeMode(packml_modes::Production).has_value());
+  ASSERT_TRUE(sm->abort());
+  ASSERT_TRUE(wait_for_state(*sm, State::ABORTED));
+  auto rc = sm->changeMode(packml_modes::Manual);
+  EXPECT_FALSE(rc.has_value())
+    << "with no configured manual mode, ABORTED must refuse every runtime switch";
   sm->deactivate();
 }
 
@@ -101,15 +146,13 @@ TEST(Modes, ChangeModeFromIdleSucceeds)
 TEST(Modes, MaskDisablesTransitionToUnavailableState)
 {
   auto sm = fresh_sm();
-  ASSERT_TRUE(drive_to_idle(*sm));
 
   AvailableStates restricted = fully_open();
   restricted[State::HOLDING]   = false;
   restricted[State::HELD]      = false;
   restricted[State::UNHOLDING] = false;
 
-  auto rc = sm->changeMode(packml_modes::Production, restricted);
-  ASSERT_TRUE(rc.has_value()) << (rc.has_value() ? "" : rc.error());
+  ASSERT_TRUE(install_mode_then_idle(*sm, packml_modes::Production, restricted));
 
   ASSERT_TRUE(sm->start());
   ASSERT_TRUE(wait_for_state(*sm, State::EXECUTE));
@@ -124,8 +167,7 @@ TEST(Modes, MaskDisablesTransitionToUnavailableState)
 TEST(Modes, MaskAllowingHoldKeepsHoldAccepted)
 {
   auto sm = fresh_sm();
-  ASSERT_TRUE(drive_to_idle(*sm));
-  ASSERT_TRUE(sm->changeMode(packml_modes::Production, fully_open()).has_value());
+  ASSERT_TRUE(install_mode_then_idle(*sm, packml_modes::Production, fully_open()));
   ASSERT_TRUE(sm->start());
   ASSERT_TRUE(wait_for_state(*sm, State::EXECUTE));
   EXPECT_TRUE(sm->hold());
@@ -136,7 +178,9 @@ TEST(Modes, MaskAllowingHoldKeepsHoldAccepted)
 TEST(Modes, OEMDefinedModeIsAcceptedByGenericInterface)
 {
   auto sm = fresh_sm();
-  ASSERT_TRUE(drive_to_idle(*sm));
+  ASSERT_TRUE(wait_for_state(*sm, State::STOPPED));
+  // A runtime switch (not the boot selection), from the spec's switch state.
+  ASSERT_TRUE(sm->changeMode(packml_modes::Production).has_value());
   // Any int is a valid ModeType -- modes are open-ended per PackML.
   packml_sm::ModeType custom = 42;
   auto rc = sm->changeMode(custom);
@@ -207,11 +251,10 @@ TEST(Modes, EnforceMandatoryStatesRestoresWhatAModeMayNotDisable)
 TEST(Modes, MaskDisablingExecuteIsRepairedSoStartingIsNotStranded)
 {
   auto sm = fresh_sm();
-  ASSERT_TRUE(drive_to_idle(*sm));
 
   AvailableStates execute_masked = fully_open();
   execute_masked[State::EXECUTE] = false;
-  ASSERT_TRUE(sm->changeMode(packml_modes::Production, execute_masked).has_value());
+  ASSERT_TRUE(install_mode_then_idle(*sm, packml_modes::Production, execute_masked));
 
   EXPECT_TRUE(sm->getAvailableStates().at(State::EXECUTE))
     << "EXECUTE is mandatory and must have been restored";
@@ -262,13 +305,15 @@ TEST(Modes, MaskDisablingAbortingIsRepairedSoErrorsStillEscalate)
 // nothing else drives mode changes and command evaluation concurrently, and a lock in the wrong
 // place -- a deadlock, or an unresponsive machine -- would surface here immediately.
 //
-// The machine is held in IDLE deliberately: mode changes are only accepted there, and UNHOLD is
-// invalid there, so both threads stay hot -- every mode change writes the mask and every command
-// reads it.
+// The machine is held in STOPPED deliberately: runtime mode changes are only accepted there, and
+// UNHOLD is invalid there, so both threads stay hot -- every mode change writes the mask and every
+// command reads it.
 TEST(Modes, ConcurrentModeChangesAndCommandEvaluationStaySafe)
 {
   auto sm = fresh_sm();
-  ASSERT_TRUE(drive_to_idle(*sm));
+  ASSERT_TRUE(wait_for_state(*sm, State::STOPPED));
+  // Establish currentMode so the churn below is runtime switching, not the boot selection.
+  ASSERT_TRUE(sm->changeMode(packml_modes::Production, fully_open()).has_value());
 
   AvailableStates hold_masked = fully_open();
   hold_masked[State::HOLDING] = false;
@@ -286,19 +331,21 @@ TEST(Modes, ConcurrentModeChangesAndCommandEvaluationStaySafe)
     });
 
   for (int i = 0; i < 200; ++i) {
-    sm->changeState(packml_sm::TransitionCmd::UNHOLD);  // invalid from IDLE: evaluated, refused
+    sm->changeState(packml_sm::TransitionCmd::UNHOLD);  // invalid from STOPPED: evaluated, refused
   }
 
   stop.store(true);
   mode_thread.join();
 
   EXPECT_GT(mode_changes.load(), 0) << "the mode thread never got a change through";
-  EXPECT_EQ(sm->getCurrentState(), State::IDLE)
-    << "the machine left IDLE during the concurrent mode/command churn -- current state "
+  EXPECT_EQ(sm->getCurrentState(), State::STOPPED)
+    << "the machine left STOPPED during the concurrent mode/command churn -- current state "
     << static_cast<int>(sm->getCurrentState());
 
-  // Still responsive, and the last mask applied is really in effect rather than half of one.
+  // Verify responsiveness and the final applied mask after the concurrent operations.
   ASSERT_TRUE(sm->changeMode(packml_modes::Production, open).has_value());
+  ASSERT_TRUE(sm->reset());
+  ASSERT_TRUE(wait_for_state(*sm, State::IDLE));
   EXPECT_TRUE(sm->start())
     << "START was refused after the churn, so the mask was left in a state nobody selected";
   EXPECT_TRUE(wait_for_state(*sm, State::EXECUTE));
@@ -317,7 +364,7 @@ TEST(Modes, ConcurrentModeChangesAndCommandEvaluationStaySafe)
 TEST(Modes, MaskNamingAnUnknownStateIsRefusedAndLeavesThePreviousModeIntact)
 {
   auto sm = fresh_sm();
-  ASSERT_TRUE(drive_to_idle(*sm));
+  ASSERT_TRUE(wait_for_state(*sm, State::STOPPED));
 
   AvailableStates hold_masked = fully_open();
   hold_masked[State::HOLDING] = false;
@@ -343,6 +390,8 @@ TEST(Modes, MaskNamingAnUnknownStateIsRefusedAndLeavesThePreviousModeIntact)
 
   // The behavioural half: the refused mask was all-open, so if any of it had landed HOLD would be
   // admitted from EXECUTE.
+  ASSERT_TRUE(sm->reset());
+  ASSERT_TRUE(wait_for_state(*sm, State::IDLE));
   ASSERT_TRUE(sm->start());
   ASSERT_TRUE(wait_for_state(*sm, State::EXECUTE));
   EXPECT_FALSE(sm->hold())
@@ -363,14 +412,11 @@ TEST(Modes, ReportedModeAndMaskAreTheOnesActuallyApplied)
   auto sm = fresh_sm();
   ASSERT_TRUE(wait_for_state(*sm, State::STOPPED));
 
-  // Before any mode is applied. Checked here rather than after drive_to_idle(), which installs
-  // an all-open mask of its own to get the machine moving.
+  // Before any mode is applied.
   EXPECT_EQ(sm->getCurrentMode(), packml_modes::Invalid)
     << "a machine that has never had a mode applied reports one";
   EXPECT_TRUE(sm->getAvailableStates().empty())
     << "a machine that has never had a mode applied reports a mask";
-
-  ASSERT_TRUE(drive_to_idle(*sm));
 
   // SUSPENDING rather than EXECUTE: EXECUTE is mandatory, so a mask disabling it is repaired on
   // the way in and could not show a difference between what was handed in and what was applied.
@@ -383,13 +429,14 @@ TEST(Modes, ReportedModeAndMaskAreTheOnesActuallyApplied)
   EXPECT_EQ(sm->getCurrentMode(), packml_modes::Manual);
   EXPECT_EQ(sm->getAvailableStates(), suspend_masked);
 
-  // A switch refused for the ordinary reason -- not from IDLE -- must not move either half.
-  ASSERT_TRUE(sm->stop());
-  ASSERT_TRUE(wait_for_state(*sm, State::STOPPED));
+  // A switch refused for the ordinary reason -- a runtime change outside STOPPED -- must not
+  // move either half.
+  ASSERT_TRUE(sm->reset());
+  ASSERT_TRUE(wait_for_state(*sm, State::IDLE));
   ASSERT_FALSE(sm->changeMode(packml_modes::Production, fully_open()).has_value());
   EXPECT_EQ(sm->getCurrentMode(), packml_modes::Manual)
-    << "a mode switch refused outside IDLE still updated the reported mode";
+    << "a mode switch refused outside STOPPED updated the reported mode";
   EXPECT_EQ(sm->getAvailableStates(), suspend_masked)
-    << "a mode switch refused outside IDLE still updated the reported mask";
+    << "a mode switch refused outside STOPPED updated the reported mask";
   sm->deactivate();
 }

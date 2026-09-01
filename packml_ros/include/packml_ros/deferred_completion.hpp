@@ -29,9 +29,11 @@
 
 class PackmlNodeInterface;
 
-namespace packml_ros {
+namespace packml_ros
+{
 
-namespace detail {
+namespace detail
+{
 
 /// One wakeup shared by every deferral a node has in flight, and co-owned by the node itself.
 ///

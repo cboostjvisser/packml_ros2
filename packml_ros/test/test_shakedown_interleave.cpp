@@ -230,8 +230,9 @@ protected:
 // this probes whether one can block, corrupt, or resolve the other.
 //
 // CONTRACT FOUND IN SOURCE: mode changes ARE state-gated. StatesGenerator::switch_states
-// (packml_sm/include/packml_sm/states_generator.hpp) contains only State::IDLE, and
-// mode_switcher() rejects any changeMode from a non-IDLE state with "Cannot switch mode in
+// (packml_sm/include/packml_sm/states_generator.hpp) contains only State::STOPPED (plus the
+// ABORTED-for-manual clause), and mode_switcher() rejects any changeMode from a
+// non-switchable state with "Cannot switch mode in
 // state: ..." (the currentMode.name.empty() escape hatch only applies before the manager's
 // own constructor-time initial changeMode -- to_string(ModeType) is std::to_string(int),
 // never empty, so the hatch is closed for the whole life of the manager after init). On the
@@ -241,8 +242,8 @@ protected:
 // CORRECT BEHAVIOR ASSERTED (the gated variant, per the contract above): the mid-wait mode
 // change is rejected promptly and cleanly -- not blocked behind the in-flight coordinated
 // wait, since the rejection happens on the executor thread while the wait blocks only the Qt
-// thread -- and does NOT disturb the in-flight RESETTING, which still resolves via the EM's
-// own report (IDLE, work_finished == 1). A follow-up mode change from IDLE then succeeds,
+// thread -- and does NOT disturb the in-flight RESETTING, which resolves via the EM's
+// own report (IDLE, work_finished == 1). A follow-up mode change from STOPPED then succeeds,
 // proving the earlier rejection was purely positional (the gate), not damage.
 TEST_F(InterleaveMonkeyTest, ModeChangeMidCoordinatedWait_BothResolveIndependently)
 {
@@ -283,7 +284,7 @@ TEST_F(InterleaveMonkeyTest, ModeChangeMidCoordinatedWait_BothResolveIndependent
   auto mode_resp = mode_future.get();
   EXPECT_FALSE(mode_resp->success)
     << "mode change from RESETTING was accepted -- switch_states (states_generator.hpp) is "
-       "supposed to gate mode changes to IDLE";
+       "supposed to gate runtime mode changes to STOPPED";
   EXPECT_EQ(mode_resp->error_code, packml_msgs::srv::ModeChange::Response::INVALID_MODE_REQUEST);
   EXPECT_FALSE(mode_resp->message.empty())
     << "rejection carried no message (mode_switcher() supplies 'Cannot switch mode in state')";
@@ -298,14 +299,19 @@ TEST_F(InterleaveMonkeyTest, ModeChangeMidCoordinatedWait_BothResolveIndependent
     << "IDLE was reached but the EM's own work had not finished -- something other than the "
        "EM's report resolved the wait";
 
-  // --- Follow-up from IDLE: the gate is positional, not damage ---
+  // A follow-up mode change from STOPPED succeeds after RESETTING completes.
+  auto stop_resp = send_state_change(rig.state_client, packml_msgs::srv::StateChange::Request::STOP);
+  ASSERT_NE(stop_resp, nullptr);
+  ASSERT_TRUE(stop_resp->success) << "STOP rejected: " << stop_resp->message;
+  ASSERT_TRUE(wait_for_state(rig.sm_node, packml_sm::State::STOPPED, 2s))
+    << "machine did not reach STOPPED for the follow-up";
   auto follow_up = std::make_shared<packml_msgs::srv::ModeChange::Request>();
   follow_up->mode.val = static_cast<int8_t>(packml_modes::Maintenance);
   auto follow_up_future = mode_client->async_send_request(follow_up);
   ASSERT_EQ(follow_up_future.wait_for(2s), std::future_status::ready)
     << "manager stopped answering mode changes after the mid-wait rejection";
   EXPECT_TRUE(follow_up_future.get()->success)
-    << "mode change from IDLE was rejected -- the earlier mid-wait rejection left the mode "
+    << "mode change from STOPPED was rejected -- the earlier mid-wait rejection left the mode "
        "path damaged, not just gated";
 
   // The ACCEPTED follow-up mode change above spawned on_change_mode()'s detached, unjoined

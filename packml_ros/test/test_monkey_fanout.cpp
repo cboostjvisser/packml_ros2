@@ -495,16 +495,20 @@ TEST_F(MonkeyFanoutTest, MonkeyRetryDoesNotDoubleDeliverAGoalTheEmActuallyRuns)
   // test_shakedown_wire.cpp's KnownDefect_StatusSpoofingSkipsRealWorkViaAlreadyThere -- a
   // different test, deliberately kept as the marker.
   //
-  // Left GREEN rather than GTEST_SKIP'd on the zero case. A skip that fires on every run is a
-  // permanently skipped test, which trains readers to ignore skips and buys no signal that this
-  // comment does not already give. Counting deliveries at a level the shortcut cannot bypass would
-  // need goal-count instrumentation the EM base class does not expose, and inventing that API for
-  // one monkey test is not worth it.
-  EXPECT_LE(em->resetting_received.load(), 1)
-    << "EM received " << em->resetting_received.load() << " RESETTING goals for one fan-out "
+  const int resetting_received = em->resetting_received.load();
+  EXPECT_LE(resetting_received, 1)
+    << "EM received " << resetting_received << " RESETTING goals for one fan-out "
        "round -- the discovery-retry path delivered a duplicate alongside the original send";
 
-  // Stop spinning rig.em_node BEFORE `em` destructs (see FlappingDiscoverability's own comment
-  // for why this ordering matters and is not just defensive paranoia).
+  // Stop the Equipment Module's spinner before destroying em. GTEST_SKIP returns
+  // immediately, so this teardown step precedes the conditional skip.
   rig.em_spin.reset();
+
+  // A zero count does not exercise duplicate-delivery detection because no
+  // RESETTING goal reached the Equipment Module.
+  if (resetting_received == 0) {
+    GTEST_SKIP() << "EM took the already_there shortcut; no goal observed, so this run was a "
+                    "no-hang/no-crash exercise of the retry path only -- duplicate-delivery "
+                    "coverage needs a run where a goal lands";
+  }
 }

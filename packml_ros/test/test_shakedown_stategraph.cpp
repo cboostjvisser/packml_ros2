@@ -158,6 +158,10 @@ public:
   std::atomic<int> work_started{0};
   std::atomic<int> work_finished{0};
 
+  // set_heartbeat_active controls heartbeat liveness. health_status and
+  // health_action control the separately evaluated actionable-error policy.
+  using PackmlNodeInterface::set_heartbeat_active;
+
   packml_msgs::msg::NodeHealth get_health_status() override
   {
     packml_msgs::msg::NodeHealth h;
@@ -379,34 +383,13 @@ TEST_F(StateGraphMonkeyTest, HoldingStaleReportDoesNotResolveSecondHold)
 }
 
 // ============================================================================
-// Correct-behavior probe: a required node going unhealthy while CLEARING's coordinated wait
-// is in flight must route the machine to ABORTING -- because Clearing, unlike Aborting, IS a
-// descendant of the `abortable` superstate, so the error transition exists for it.
-//
-// Contract chain, each link verified in source:
-//   - CompletionTracker::wait_for_all() (completion_tracker.hpp) cross-checks every still-
-//     pending node against the health predicate and returns ABORTED_BY_HEALTH for a required
-//     node that is unhealthy -- the EM defers CLEARING with ~800ms of work precisely so the
-//     round is still pending when that cross-check runs (a non-deferring EM would complete on
-//     acceptance and the wait would return COMPLETE before health ever mattered).
-//   - The setStateOperation-bound function (packml_interface.hpp, kCoordinatedStates loop)
-//     returns nonzero for ABORTED_BY_HEALTH, and ActingState's operation (packml_sm's
-//     acting_state.cpp) posts an ErrorEvent for a nonzero return.
-//   - states_generator.hpp::generate_all_packml_states() constructs Clearing INSIDE abortable
-//     (`ActingState::Clearing(abortable, delay_ms)`) and adds the graph's only ERROR-type
-//     transition to abortable itself (`abortable->addTransition(abortable_aborting_on_error)`)
-//     -- so an ErrorEvent posted while in Clearing has a matching transition to Aborting.
-//
-// Deliberately NOT asserted: ABORTED afterward. The node is still unhealthy when ABORTING's
-// own coordinated wait runs the same cross-check, so that wait fails too -- and the resulting
-// ErrorEvent is posted while IN Aborting, which is a SIBLING of abortable with no error
-// transition of its own: the event is silently dropped and the machine is permanently stuck
-// in ABORTING. That is the confirmed KNOWN GAP, with its own intentionally-failing test
-// elsewhere; re-asserting it here would just double-count it. This
-// test ends at the ABORTING assertion on purpose -- proving the error ROUTING works wherever
-// the graph supports it, which sharpens the known deadlock's diagnosis: it is purely about
-// Aborting's sibling position in the graph, not about error routing in general.
-TEST_F(StateGraphMonkeyTest, UnhealthyDuringClearing_ErrorRoutesToAborting)
+// A required node becoming silent while its CLEARING result is pending makes
+// CompletionTracker return ABORTED_BY_HEALTH. CLEARING returns an error, and the
+// abortable superstate routes its ErrorEvent to ABORTING. The EM defers CLEARING
+// for approximately 800 ms so the liveness check occurs while its result is pending.
+// ABORTING does not perform the health cross-check, and this EM completes its
+// ABORTING goal immediately, so the machine proceeds to ABORTED.
+TEST_F(StateGraphMonkeyTest, SilentDuringClearing_ErrorRoutesToAborting)
 {
   const auto em_name = packml_ros_test::unique_node_name("shk_clear_health_em");
   std::vector<rclcpp::Parameter> extra_mgr_params = {
@@ -432,13 +415,12 @@ TEST_F(StateGraphMonkeyTest, UnhealthyDuringClearing_ErrorRoutesToAborting)
   ASSERT_NE(abort_resp, nullptr);
   ASSERT_TRUE(abort_resp->success) << "ABORT rejected while healthy: " << abort_resp->message;
   ASSERT_TRUE(wait_for_state(rig.sm_node, packml_sm::State::ABORTED, 2s))
-    << "machine did not reach ABORTED while the EM was still healthy";
+    << "machine did not reach ABORTED while the EM was healthy";
 
-  // Flip the node unhealthy (ERROR / action=ABORT) and give the manager several heartbeat
-  // ticks to see it. The health monitor's own fired ABORT action is a harmless no-op here --
-  // the machine is already in ABORTED.
-  em->health_status.store(packml_msgs::msg::NodeHealth::ERROR);
-  em->health_action.store(packml_msgs::msg::NodeHealth::ABORT);
+  // Disable heartbeats and wait past the 300 ms staleness bound derived from the
+  // 100 ms interval and 3.0 timeout factor. The timeout's ABORT command has no
+  // effect while the machine is in ABORTED.
+  em->set_heartbeat_active(false);
   std::this_thread::sleep_for(400ms);
 
   // CLEAR must be ACCEPTED despite the unhealthy node: on_change_state()'s health gate
@@ -452,15 +434,7 @@ TEST_F(StateGraphMonkeyTest, UnhealthyDuringClearing_ErrorRoutesToAborting)
     << "CLEAR from ABORTED should be accepted regardless of node health (the gate only "
        "guards RESET from STOPPED): " << clear_resp->message;
 
-  // The machine must leave CLEARING via the error path. Accept ABORTING *or* ABORTED as proof
-  // it took that path: neither intermediate state is reliably observable by polling, because
-  // the unhealthy fact predates both waits and the cross-check can fail each within
-  // milliseconds of entry.
-  //
-  // The trace is CLEARING -> ABORTING -> ABORTED, and the machine does not linger in ABORTING:
-  // its own wait fails on the same unhealthy node, and the Aborting --ERROR--> Aborted edge
-  // carries it straight through. Polling for ABORTING alone would miss that window and read
-  // ABORTED (9) as a failure, so the full sequence is asserted below.
+  // Observe either ABORTING or ABORTED because ABORTING can complete between polls.
   {
     const auto deadline = std::chrono::steady_clock::now() + 2s;
     bool left_clearing_via_error = false;
@@ -479,24 +453,74 @@ TEST_F(StateGraphMonkeyTest, UnhealthyDuringClearing_ErrorRoutesToAborting)
       << static_cast<int>(rig.sm_node->getCurrentState());
   }
 
-  // And it must not stop in ABORTING. This is the half that was impossible before the error
-  // edge: ABORTING's own coordinated wait still fails on the same unhealthy node, but its
-  // ErrorEvent now has somewhere to go, so the machine reaches the safe terminal instead of
-  // trapping. A failure here means the edge regressed and the wedge is back.
+  // ABORTING excludes the health cross-check and this EM completes its ABORTING goal
+  // immediately, allowing the state-complete transition to ABORTED.
   ASSERT_TRUE(wait_for_state(rig.sm_node, packml_sm::State::ABORTED, 2s))
-    << "machine stopped in ABORTING instead of reaching ABORTED -- the "
-       "Aborting --ERROR--> Aborted edge (states_generator.hpp) is the only thing that lets a "
-       "failed abort escape; current state: "
+     << "ABORTING did not complete to ABORTED after the Equipment Module's immediate result; "
+       "current state: "
     << static_cast<int>(rig.sm_node->getCurrentState());
 
-  // Flip the node healthy again and let things quiesce so teardown is not fighting a
-  // still-firing health monitor, and let the EM's ~800ms CLEARING work thread (raw `this`)
-  // run out before the EM destructs.
-  em->health_status.store(packml_msgs::msg::NodeHealth::HEALTHY);
-  em->health_action.store(packml_msgs::msg::NodeHealth::NONE);
+  // Resume heartbeats and wait for timeout processing and the detached CLEARING
+  // work thread to finish before destroying the Equipment Module.
+  em->set_heartbeat_active(true);
   std::this_thread::sleep_for(1200ms);
 
   // See the file-header TEARDOWN RULE: stop em_spin before em (declared after rig) destructs.
+  rig.em_spin.reset();
+}
+
+// A required node that reports an actionable error on current heartbeats passes the
+// completion liveness check. Its deferred CLEARING work completes and the machine
+// reaches STOPPED. The RESET gate evaluates the actionable-error policy separately.
+TEST_F(StateGraphMonkeyTest, LatchedErrorButAliveDuringClearing_ClearCompletes)
+{
+  const auto em_name = packml_ros_test::unique_node_name("shk_clear_latched_em");
+  std::vector<rclcpp::Parameter> extra_mgr_params = {
+    rclcpp::Parameter("required_nodes", std::vector<std::string>{em_name}),
+    rclcpp::Parameter("heartbeat_timeout_factor", 3.0),
+  };
+  auto rig = begin_setup(
+    "shk_clear_latched", em_name, /*state_complete_timeout_ms=*/5000, extra_mgr_params,
+    rclcpp::NodeOptions().parameter_overrides({rclcpp::Parameter("heartbeat_interval_ms", 100)}));
+  auto em = std::make_shared<FlippableHealthEquipmentModule>(
+    rig.em_node, packml_sm::State::CLEARING, 800ms);
+  finish_setup(rig);
+
+  ASSERT_GE(packml_ros_test::wait_for_healthy_heartbeats(rig.mgr_node, em_name), 2)
+    << "no heartbeats from " << em_name << " reached the manager";
+
+  auto abort_resp =
+    send_state_change(rig.state_client, packml_msgs::srv::StateChange::Request::ABORT);
+  ASSERT_NE(abort_resp, nullptr);
+  ASSERT_TRUE(abort_resp->success) << "ABORT rejected while healthy: " << abort_resp->message;
+  ASSERT_TRUE(wait_for_state(rig.sm_node, packml_sm::State::ABORTED, 2s))
+    << "machine did not reach ABORTED while the EM was healthy";
+
+  // Report ERROR / ABORT on each heartbeat. This fails the gate policy but passes
+  // the heartbeat-liveness check.
+  em->health_status.store(packml_msgs::msg::NodeHealth::ERROR);
+  em->health_action.store(packml_msgs::msg::NodeHealth::ABORT);
+  std::this_thread::sleep_for(400ms);
+
+  auto clear_resp =
+    send_state_change(rig.state_client, packml_msgs::srv::StateChange::Request::CLEAR);
+  ASSERT_NE(clear_resp, nullptr);
+  ASSERT_TRUE(clear_resp->success)
+    << "CLEAR from ABORTED should be accepted regardless of node health: "
+    << clear_resp->message;
+
+  // The deferred CLEARING work completes and the machine reaches STOPPED without
+  // routing to ABORTING.
+  ASSERT_TRUE(wait_for_state(rig.sm_node, packml_sm::State::STOPPED, 4s))
+    << "CLEARING did not complete for a latched-but-alive node; current state: "
+    << static_cast<int>(rig.sm_node->getCurrentState());
+  EXPECT_GE(em->work_started.load(), 1)
+    << "the EM never started its deferred CLEARING work, so this run proved nothing";
+
+  // Clear the reported error and wait for detached work before stopping the spinner.
+  em->health_status.store(packml_msgs::msg::NodeHealth::HEALTHY);
+  em->health_action.store(packml_msgs::msg::NodeHealth::NONE);
+  std::this_thread::sleep_for(1200ms);
   rig.em_spin.reset();
 }
 

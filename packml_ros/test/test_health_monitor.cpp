@@ -1393,8 +1393,10 @@ TEST(IsNodeHealthyTest, NeverSeenRequiredNodeReturnsFalse)
   EXPECT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(false));
 }
 
-// A required node reporting an actionable error (HOLD/SUSPEND/ABORT) reports false.
-TEST(IsNodeHealthyTest, UnhealthyRequiredNodeReturnsFalse)
+// A required node with a current heartbeat returns true even when it reports an
+// actionable error. is_node_healthy() evaluates liveness; the STOPPED gate
+// separately rejects the actionable error outside manual mode.
+TEST(IsNodeHealthyTest, LatchedActionableErrorStillAnsweringReturnsTrue)
 {
   HealthMonitor mon([](int32_t) {});
   mon.register_required_node("em_a");
@@ -1406,7 +1408,8 @@ TEST(IsNodeHealthyTest, UnhealthyRequiredNodeReturnsFalse)
   hb.heartbeat_interval_ms = 1000;
   mon.on_heartbeat(hb);
 
-  EXPECT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(false));
+  EXPECT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(true));
+  EXPECT_FALSE(mon.can_transition_from_stopped(/*manual_mode_active=*/false));
 }
 
 // A required node whose heartbeat has GONE STALE reports false, mirroring gate_block_reason()'s
@@ -1444,23 +1447,25 @@ TEST(IsNodeHealthyTest, StaleHeartbeatOnRequiredNodeReturnsFalse)
        "inline staleness comparison and nothing else";
 }
 
-// A node that was unhealthy and then reports HEALTHY again reports true — the accessor
-// reflects live status, not a sticky latch.
-TEST(IsNodeHealthyTest, RecoveredNodeReturnsTrueAgain)
+// A heartbeat following a stale interval restores liveness. The 250 ms pause
+// exceeds the 60 ms timeout used by this test.
+TEST(IsNodeHealthyTest, SilentThenHeartbeatingAgainReturnsTrueAgain)
 {
   HealthMonitor mon([](int32_t) {});
-  mon.register_required_node("em_a");
+  mon.register_required_node("em_a", /*timeout_factor=*/3.0, /*startup_ms=*/1);
 
   NodeHeartbeat hb;
   hb.node_name = "em_a";
-  hb.health.status = NodeHealth::ERROR;
-  hb.health.action = NodeHealth::HOLD;
-  hb.heartbeat_interval_ms = 1000;
-  mon.on_heartbeat(hb);
-  ASSERT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(false));
-
   hb.health.status = NodeHealth::HEALTHY;
   hb.health.action = NodeHealth::NONE;
+  hb.heartbeat_interval_ms = 20;
+  mon.on_heartbeat(hb);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));  // 4x the 60 ms bound
+  ASSERT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(false))
+    << "a seen-then-silent node stayed healthy -- without the stale phase the recovery "
+       "assertion below proves nothing";
+
   mon.on_heartbeat(hb);
   EXPECT_EQ(mon.is_node_healthy("em_a"), std::optional<bool>(true));
 }

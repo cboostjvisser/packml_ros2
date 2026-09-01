@@ -67,9 +67,17 @@ public:
     {State::COMPLETE, true},
   };
 
+  // Runtime mode changes are accepted only from STOPPED. The exception for selecting the
+  // configured Manual mode from ABORTED is handled separately in mode_switcher().
   ModeSwitchStates switch_states = {
-    State::IDLE
+    State::STOPPED
   };
+
+  /// Identifies the configured Manual mode, which may be selected from ABORTED. Modes are
+  /// deployment data, so callers configure this through StateMachine::set_manual_mode().
+  /// The sentinel disables this exception.
+  static constexpr ModeType kNoManualMode = -1;
+  ModeType manual_mode = kNoManualMode;
 
 
 
@@ -120,11 +128,18 @@ public:
       // immediately after this read.
       std::lock_guard<std::mutex> lk(mode_mask_mutex());
 
-      // TODO: Hacky if current mode name is empty; probably uninitialized
-      if (switch_states.find(sm->getCurrentState()) == switch_states.end() && !currentMode.name.empty())
+      // Runtime mode changes are admitted from switch_states, or from ABORTED when the
+      // target is the configured manual mode. An empty currentMode.name identifies the
+      // boot-time selection, which is not subject to the runtime state restriction.
+      const State current_state = sm->getCurrentState();
+      const bool boot_selection = currentMode.name.empty();
+      const bool manual_from_aborted = current_state == State::ABORTED &&
+        manual_mode != kNoManualMode && mode_to_switch.value == manual_mode;
+      if (switch_states.find(current_state) == switch_states.end() &&
+        !manual_from_aborted && !boot_selection)
       {
         std::stringstream msg;
-        msg << "Cannot switch mode in state: " << sm->getCurrentState();
+        msg << "Cannot switch mode in state: " << current_state;
         refusal = msg.str();
       }
       else

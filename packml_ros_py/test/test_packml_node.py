@@ -211,6 +211,74 @@ class TestStateTransitionAction:
         action_client.destroy()
         rejecting_node.destroy_node()
 
+    def test_raising_transition_hook_aborts_and_releases_the_arm(
+            self, client_node, executor):
+        """A raising transition hook aborts the goal and releases the claim arm.
+
+        Repeating the goal verifies that it reaches the hook instead of an in-progress
+        rejection.
+        """
+        class RaisingNode(PackmlNode):
+            def __init__(self):
+                super().__init__('raising_node')
+
+            def on_state_transition_request(self, target_state):
+                raise RuntimeError('hook exploded')
+
+        raising_node = RaisingNode()
+        executor.add_node(raising_node)
+
+        action_client = ActionClient(
+            client_node, StateTransitionAction, f'/raising_node/{STATE_TRANSITION_ACTION}')
+        assert action_client.wait_for_server(timeout_sec=2.0)
+
+        for _ in range(2):
+            goal_handle, result = _send_state_goal(
+                action_client, executor, int(State.EXECUTE))
+            assert goal_handle is not None and goal_handle.accepted
+            assert result is not None
+            assert result.success is False
+            assert 'raised' in result.message.lower()
+
+        action_client.destroy()
+        raising_node.destroy_node()
+
+    def test_raising_deferred_work_aborts_and_releases_the_arm(
+            self, client_node, executor):
+        """A raising deferred-work hook aborts the goal and releases the claim arm.
+
+        Repeating the goal verifies that it reaches the hook without waiting for the
+        deferred-completion timeout.
+        """
+        class RaisingDeferringNode(PackmlNode):
+            def __init__(self):
+                super().__init__('raising_deferring_node')
+
+            def defers_completion(self, state):
+                return state == State.STOPPED
+
+            def on_deferred_work(self, state, completion):
+                raise RuntimeError('dispatch exploded')
+
+        node = RaisingDeferringNode()
+        executor.add_node(node)
+
+        action_client = ActionClient(
+            client_node, StateTransitionAction,
+            f'/raising_deferring_node/{STATE_TRANSITION_ACTION}')
+        assert action_client.wait_for_server(timeout_sec=2.0)
+
+        for _ in range(2):
+            goal_handle, result = _send_state_goal(
+                action_client, executor, int(State.STOPPED))
+            assert goal_handle is not None and goal_handle.accepted
+            assert result is not None
+            assert result.success is False
+            assert 'on_deferred_work' in result.message
+
+        action_client.destroy()
+        node.destroy_node()
+
     def test_defers_completion_blocks_until_reported(self, client_node, executor):
         """A node whose defers_completion() returns True for a state does NOT
         complete that goal until that goal's own completion is reported."""
@@ -983,3 +1051,67 @@ class TestDeferredCompletionEdgeCases:
 
         action_client.destroy()
         node.destroy_node()
+
+
+class TestHeartbeatIsolation:
+    """Heartbeat publication uses a callback group independent of transition hooks."""
+
+    def test_heartbeat_survives_a_blocking_transition_hook(self, client_node):
+        import threading
+        from rclpy.executors import MultiThreadedExecutor
+
+        class BlockingNode(PackmlNode):
+            def __init__(self):
+                super().__init__(
+                    'blocking_hook_node',
+                    parameter_overrides=[
+                        Parameter(PARAM_HEARTBEAT_INTERVAL_MS, value=50)])
+                self.entered = threading.Event()
+                self.release = threading.Event()
+
+            def on_state_transition_request(self, target_state):
+                self.entered.set()
+                self.release.wait(timeout=5.0)
+                return True
+
+        node = BlockingNode()
+        beats = []
+        sub = client_node.create_subscription(
+            NodeHeartbeat, f'/blocking_hook_node/{HEARTBEAT_TOPIC}',
+            lambda _m: beats.append(time.monotonic()), _HEARTBEAT_QOS)
+        exec_ = MultiThreadedExecutor(num_threads=4)
+        exec_.add_node(node)
+        exec_.add_node(client_node)
+        spinner = threading.Thread(target=exec_.spin, daemon=True)
+        spinner.start()
+        action_client = None
+        try:
+            action_client = ActionClient(
+                client_node, StateTransitionAction,
+                f'/blocking_hook_node/{STATE_TRANSITION_ACTION}')
+            assert action_client.wait_for_server(timeout_sec=3.0)
+            goal = StateTransitionAction.Goal()
+            goal.state.val = int(State.STOPPED)
+            send_future = action_client.send_goal_async(goal)
+            assert node.entered.wait(timeout=5.0), \
+                "the transition hook was never entered"
+            # While the hook blocks one executor thread, 50 ms heartbeats are
+            # published through the independent callback group.
+            n0 = len(beats)
+            time.sleep(1.0)
+            n1 = len(beats)
+            node.release.set()
+            deadline = time.monotonic() + 5.0
+            while not send_future.done() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert n1 - n0 >= 5, (
+                f"only {n1 - n0} heartbeats during a 1 s hook block "
+                f"(expected ~20): the transition hook starves the heartbeat")
+        finally:
+            node.release.set()
+            exec_.shutdown()
+            spinner.join(timeout=5.0)
+            if action_client is not None:
+                action_client.destroy()
+            client_node.destroy_subscription(sub)
+            node.destroy_node()

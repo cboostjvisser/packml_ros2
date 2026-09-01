@@ -750,6 +750,14 @@ ModeType StateMachine::getCurrentMode() const
   return gen->currentMode.value;
 }
 
+void StateMachine::set_manual_mode(ModeType mode)
+{
+  // Synchronize with mode_switcher() so each admission decision reads one
+  // complete manual-mode value.
+  std::lock_guard<std::mutex> lk(mode_mask_mutex());
+  gen->manual_mode = mode;
+}
+
 AvailableStates StateMachine::getAvailableStates() const
 {
   std::lock_guard<std::mutex> lk(mode_mask_mutex());

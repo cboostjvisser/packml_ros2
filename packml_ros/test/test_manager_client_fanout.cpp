@@ -83,10 +83,8 @@ protected:
 /// immediately succeeding every goal, like a non-deferring Equipment Module) and has
 /// NO mode-transition service at all. Used to test the mode fan-out's "service
 /// unavailable" alarm path without ALSO blocking state-transition completion
-/// tracking: EVERY registered node is tracked for coordinated-state completion
-/// (there is no separate opt-in list), so a node
-/// that is offline for state too would keep RESETTING from ever reaching IDLE — and
-/// mode changes are only valid from IDLE.
+/// tracking. Every registered node participates in coordinated-state completion,
+/// so this class accepts and completes state goals while omitting the mode service.
 class StateOnlyChild
 {
 public:
@@ -229,18 +227,10 @@ TEST_F(ManagerClientFanoutTest, StateTransitionFannedOutToChild)
 }
 
 // A mode change on the manager is fanned out to every registered child's
-// packml_mode_transition service. Expected: after ~/changeMode from IDLE, the child's
-// mode service receives the requested mode value. (Without this, mode fan-out
-// delivery would have no direct coverage at all — the alarm tests only cover its
-// failure paths.)
+// packml_mode_transition service. The child receives the requested mode value.
 TEST_F(ManagerClientFanoutTest, ModeTransitionFannedOutToChild)
 {
-  // Drive to IDLE first — mode changes are only valid from IDLE.
-  auto resp = send_state(packml_msgs::srv::StateChange::Request::RESET);
-  ASSERT_NE(resp, nullptr);
-  ASSERT_TRUE(resp->success) << "Setup RESET failed: " << resp->message;
-  std::this_thread::sleep_for(500ms);  // let RESETTING -> IDLE settle
-
+  // The state machine starts in STOPPED, which permits runtime mode changes.
   auto mode_client = node_->create_client<packml_msgs::srv::ModeChange>(
     node_name_ + "/" + packml_ros::kChangeModeService);
   ASSERT_TRUE(mode_client->wait_for_service(5s));
@@ -276,9 +266,8 @@ TEST_F(ManagerClientFanoutTest, UnresponsiveChildModeChangeDoesNotBlockService)
       {rclcpp::Parameter("node_names", std::vector<std::string>{slow_child_name})}));
   auto slow_child_node = rclcpp::Node::make_shared(slow_child_name);
 
-  // Responds immediately to state transitions (needed to drive to IDLE below — mode
-  // changes are only valid from IDLE); its mode response is deliberately delayed well
-  // past the manager's fan-out deadline to simulate a hung Equipment Module.
+  // State-transition goals complete immediately. The mode response is delayed
+  // past the manager's fan-out deadline to simulate an unresponsive Equipment Module.
   auto slow_child_em = std::make_shared<ChildEquipmentModule>(slow_child_node);
   slow_child_em->mode_response_delay = 6s;
 
@@ -298,13 +287,7 @@ TEST_F(ManagerClientFanoutTest, UnresponsiveChildModeChangeDoesNotBlockService)
   ASSERT_TRUE(slow_state_client->wait_for_service(5s));
   ASSERT_TRUE(slow_mode_client->wait_for_service(5s));
 
-  // Mode changes are only valid from IDLE — drive there first (SM starts in STOPPED).
-  auto state_req = std::make_shared<packml_msgs::srv::StateChange::Request>();
-  state_req->command = packml_msgs::srv::StateChange::Request::RESET;
-  auto state_future = slow_state_client->async_send_request(state_req);
-  ASSERT_EQ(state_future.wait_for(5s), std::future_status::ready);
-  ASSERT_TRUE(state_future.get()->success) << "Setup RESET failed";
-  std::this_thread::sleep_for(500ms);  // let RESETTING -> IDLE settle
+  // The state machine starts in STOPPED, which permits runtime mode changes.
 
   // Watch the alarm topic for the fan-out failure report (subscribe before acting;
   // volatile QoS deliberately ignores any earlier retained alarms). Wait for the
@@ -382,12 +365,9 @@ TEST_F(ManagerClientFanoutTest, OfflineChildFlaggedByFanoutAlarm)
   auto mode_client = mgr_node->create_client<packml_msgs::srv::ModeChange>(
     mgr_name + "/" + packml_ros::kChangeModeService);
 
-  // Every registered node is now tracked for coordinated-state completion (no more
-  // separate opt-in list), so a node that is offline for state too would keep
-  // RESETTING from ever reaching IDLE — and mode changes are only valid from IDLE.
-  // StateOnlyChild serves the state-transition action normally (so RESETTING
-  // completes) while genuinely having no mode-transition service, preserving this
-  // test's actual point: an unreachable MODE endpoint specifically.
+  // Every registered node participates in coordinated-state completion. StateOnlyChild
+  // completes state goals and omits the mode-transition service, isolating the
+  // unavailable mode-endpoint behavior.
   auto offline_child_node = rclcpp::Node::make_shared(offline_child_name);
   StateOnlyChild offline_child(offline_child_node);
   packml_ros_test::SpinHelper offline_child_spin(offline_child_node);
@@ -396,21 +376,7 @@ TEST_F(ManagerClientFanoutTest, OfflineChildFlaggedByFanoutAlarm)
   ASSERT_TRUE(state_client->wait_for_service(5s));
   ASSERT_TRUE(mode_client->wait_for_service(5s));
 
-  // Drive to IDLE (mode changes are only valid from IDLE).
-  auto state_req = std::make_shared<packml_msgs::srv::StateChange::Request>();
-  state_req->command = packml_msgs::srv::StateChange::Request::RESET;
-  auto state_future = state_client->async_send_request(state_req);
-  ASSERT_EQ(state_future.wait_for(5s), std::future_status::ready);
-  ASSERT_TRUE(state_future.get()->success) << "Setup RESET failed";
-
-  // Poll for IDLE rather than a fixed sleep: under system load (this test runs
-  // alongside 200+ others in the same binary), a flat 500ms is not always enough
-  // for RESETTING's completion round-trip to the real StateOnlyChild to settle.
-  {
-    packml_ros_test::wait_until(
-      [&] {return mgr_sm->getCurrentState() == packml_sm::State::IDLE;}, 5s, 10ms);
-    ASSERT_EQ(mgr_sm->getCurrentState(), packml_sm::State::IDLE) << "Setup RESET never reached IDLE";
-  }
+  // The state machine starts in STOPPED, which permits runtime mode changes.
 
   std::mutex alarms_mutex;
   std::vector<packml_msgs::msg::Alarm> alarms;

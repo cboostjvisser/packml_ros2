@@ -117,6 +117,25 @@ inline bool drive_to_idle(packml_sm::StateMachine & sm)
   return wait_for_state(sm, packml_sm::State::IDLE);
 }
 
+// Installs a mode and its mask from STOPPED, which permits runtime changes to
+// any target mode, and then resets to IDLE so tests can exercise the mask from
+// a running state.
+inline bool install_mode_then_idle(
+  packml_sm::StateMachine & sm, packml_sm::ModeType mode,
+  packml_sm::AvailableStates mask)
+{
+  if (!wait_for_state(sm, packml_sm::State::STOPPED)) {
+    return false;
+  }
+  if (!sm.changeMode(mode, mask).has_value()) {
+    return false;
+  }
+  if (!sm.reset()) {
+    return false;
+  }
+  return wait_for_state(sm, packml_sm::State::IDLE);
+}
+
 }  // namespace packml_sm_test
 
 #endif  // PACKML_SM__TEST__TEST_HELPERS_HPP_

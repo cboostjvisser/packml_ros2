@@ -104,19 +104,20 @@ protected:
   std::unique_ptr<packml_ros_test::SpinHelper> spinner_;
 };
 
-TEST_F(ManagerModeChangeTest, ModeChangeFromIdleSucceeds)
+TEST_F(ManagerModeChangeTest, ModeChangeFromStoppedSucceeds)
 {
-  drive_to_idle();
-
+  // The state machine starts in STOPPED, which permits runtime mode changes.
   auto resp = send_mode(packml_modes::Maintenance);
   ASSERT_NE(resp, nullptr);
   EXPECT_TRUE(resp->success) << "Mode change failed: " << resp->message;
   EXPECT_EQ(resp->error_code, packml_msgs::srv::ModeChange::Response::SUCCESS);
 }
 
-TEST_F(ManagerModeChangeTest, ModeChangeFromInvalidStateReturnsError)
+TEST_F(ManagerModeChangeTest, ModeChangeFromIdleReturnsError)
 {
-  // SM starts in STOPPED; mode change only allowed from IDLE.
+  // Runtime mode changes are rejected from IDLE. They are admitted from STOPPED,
+  // or from ABORTED when the target is the configured manual mode.
+  drive_to_idle();
   auto resp = send_mode(packml_modes::Maintenance);
   ASSERT_NE(resp, nullptr);
   EXPECT_FALSE(resp->success);
@@ -125,9 +126,7 @@ TEST_F(ManagerModeChangeTest, ModeChangeFromInvalidStateReturnsError)
 
 TEST_F(ManagerModeChangeTest, ModeChangeToSameModeSucceeds)
 {
-  drive_to_idle();
-
-  // Changing to a mode (even same one) from IDLE should succeed
+  // Same-mode requests are accepted from STOPPED.
   auto resp = send_mode(packml_modes::Production);
   ASSERT_NE(resp, nullptr);
   EXPECT_TRUE(resp->success) << "Same-mode change failed: " << resp->message;
@@ -185,13 +184,9 @@ TEST(ManagerModeMaskPersistence, ConfiguredMaskStillAppliesAfterRuntimeModeChang
       return fut.wait_for(5s) == std::future_status::ready ? fut.get() : nullptr;
     };
 
-  // Reach IDLE, the only state a mode change is permitted from.
+  // Ensure STOPPED, a state that permits runtime mode changes.
   ASSERT_NE(send_state(packml_msgs::srv::StateChange::Request::STOP), nullptr);
   std::this_thread::sleep_for(300ms);
-  auto reset_resp = send_state(packml_msgs::srv::StateChange::Request::RESET);
-  ASSERT_NE(reset_resp, nullptr);
-  ASSERT_TRUE(reset_resp->success) << "RESET rejected: " << reset_resp->message;
-  std::this_thread::sleep_for(400ms);
 
   // Runtime switch into Maintenance, whose configured mask forbids HOLDING/HELD.
   auto mode_req = std::make_shared<packml_msgs::srv::ModeChange::Request>();
@@ -199,6 +194,12 @@ TEST(ManagerModeMaskPersistence, ConfiguredMaskStillAppliesAfterRuntimeModeChang
   auto mode_fut = mode_client->async_send_request(mode_req);
   ASSERT_EQ(mode_fut.wait_for(5s), std::future_status::ready);
   ASSERT_TRUE(mode_fut.get()->success) << "runtime changeMode(Maintenance) rejected";
+  std::this_thread::sleep_for(400ms);
+
+  // Reset to IDLE so START is admissible below.
+  auto reset_resp = send_state(packml_msgs::srv::StateChange::Request::RESET);
+  ASSERT_NE(reset_resp, nullptr);
+  ASSERT_TRUE(reset_resp->success) << "RESET rejected: " << reset_resp->message;
   std::this_thread::sleep_for(400ms);
 
   // Drive to EXECUTE, where HOLD is the meaningful command.
@@ -218,6 +219,57 @@ TEST(ManagerModeMaskPersistence, ConfiguredMaskStillAppliesAfterRuntimeModeChang
        "overload)";
 
   std::remove(yaml_path.c_str());
+}
+
+// With manual_mode configured, ~/changeMode admits that mode from ABORTED and
+// rejects other target modes from ABORTED.
+TEST(ManagerManualMode, AbortedAdmitsOnlyTheConfiguredManualMode)
+{
+  const auto node_name = packml_ros_test::unique_node_name("mgr_manual_mode");
+  auto node = rclcpp::Node::make_shared(node_name,
+    rclcpp::NodeOptions().parameter_overrides({
+      rclcpp::Parameter(packml_ros::kParamInitialMode, 1),               // boot in Production
+      rclcpp::Parameter(packml_ros::kParamManualMode,
+        static_cast<int>(packml_modes::Manual)),
+    }));
+  auto sm_node = std::make_unique<SMNode_new>(node);
+  auto mode_client = node->create_client<packml_msgs::srv::ModeChange>(node_name + "/changeMode");
+  auto state_client = node->create_client<packml_msgs::srv::StateChange>(node_name + "/changeState");
+  packml_ros_test::SpinHelper spin(node);
+  ASSERT_TRUE(mode_client->wait_for_service(5s));
+  ASSERT_TRUE(state_client->wait_for_service(5s));
+  std::this_thread::sleep_for(500ms);
+
+  auto send_state = [&](int8_t cmd) {
+      auto req = std::make_shared<packml_msgs::srv::StateChange::Request>();
+      req->command = cmd;
+      auto fut = state_client->async_send_request(req);
+      return fut.wait_for(5s) == std::future_status::ready ? fut.get() : nullptr;
+    };
+  auto send_mode = [&](int8_t mode_val) {
+      auto req = std::make_shared<packml_msgs::srv::ModeChange::Request>();
+      req->mode.val = mode_val;
+      auto fut = mode_client->async_send_request(req);
+      return fut.wait_for(5s) == std::future_status::ready ? fut.get() : nullptr;
+    };
+
+  // Enter ABORTED to exercise its configured manual-mode exception.
+  auto abort_resp = send_state(packml_msgs::srv::StateChange::Request::ABORT);
+  ASSERT_NE(abort_resp, nullptr);
+  ASSERT_TRUE(abort_resp->success) << "ABORT rejected: " << abort_resp->message;
+  std::this_thread::sleep_for(400ms);  // ABORTING -> ABORTED
+
+  // A non-manual mode is refused from ABORTED.
+  auto maint = send_mode(static_cast<int8_t>(packml_modes::Maintenance));
+  ASSERT_NE(maint, nullptr);
+  EXPECT_FALSE(maint->success)
+    << "ABORTED admitted a non-manual runtime mode change";
+
+  // The configured Manual mode is admitted from ABORTED.
+  auto manual = send_mode(static_cast<int8_t>(packml_modes::Manual));
+  ASSERT_NE(manual, nullptr);
+  EXPECT_TRUE(manual->success)
+    << "ABORTED refused the configured manual mode: " << manual->message;
 }
 
 // ============================================================================
@@ -246,13 +298,9 @@ TEST(ManagerDeclaredModes, DeploymentVocabularyReplacesTheLinkedOne)
       rclcpp::Parameter(packml_ros::kParamInitialMode, 1),
     }));
   auto sm_node = std::make_unique<SMNode_new>(node);
-
   auto mode_client = node->create_client<packml_msgs::srv::ModeChange>(node_name + "/changeMode");
-  auto state_client = node->create_client<packml_msgs::srv::StateChange>(
-    node_name + "/changeState");
   packml_ros_test::SpinHelper spinner(node);
   ASSERT_TRUE(mode_client->wait_for_service(5s));
-  ASSERT_TRUE(state_client->wait_for_service(5s));
   std::this_thread::sleep_for(500ms);
 
   auto send_mode = [&](int8_t val) {
@@ -262,16 +310,7 @@ TEST(ManagerDeclaredModes, DeploymentVocabularyReplacesTheLinkedOne)
       return fut.wait_for(5s) == std::future_status::ready ? fut.get() : nullptr;
     };
 
-  // Reach IDLE, the only state a mode change is permitted from.
-  auto reset_req = std::make_shared<packml_msgs::srv::StateChange::Request>();
-  reset_req->command = packml_msgs::srv::StateChange::Request::RESET;
-  auto reset_fut = state_client->async_send_request(reset_req);
-  ASSERT_EQ(reset_fut.wait_for(5s), std::future_status::ready);
-  ASSERT_TRUE(reset_fut.get()->success);
-  std::this_thread::sleep_for(400ms);
-
-  // Declared but outside packml_sm's bundled vocabulary: this is the case the bundled
-  // is_known_mode() could never have accepted.
+  // STOPPED permits runtime mode changes.
   auto clean = send_mode(5);
   ASSERT_NE(clean, nullptr);
   EXPECT_TRUE(clean->success) << "declared mode 5 (Clean) rejected: " << clean->message;

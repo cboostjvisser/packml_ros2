@@ -206,7 +206,10 @@ def resolve_package_path(spec, base_dir):
             raise ValueError(
                 f"malformed package:// URI (no path after the package name): '{spec}'")
         pkg, relpath = rest.split('/', 1)
-        if '..' in relpath.split('/'):
+        # os.path.join discards every earlier part when a later one is
+        # absolute, so 'package://pkg//etc/passwd' (relpath '/etc/passwd')
+        # would escape without a single '..' segment.
+        if os.path.isabs(relpath) or '..' in relpath.split('/'):
             raise ValueError(
                 f"package:// URI '{spec}' resolves outside package '{pkg}'’s share "
                 f'directory — rejected')

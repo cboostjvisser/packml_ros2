@@ -408,26 +408,22 @@ public:
     return v;
   }
 
-  /// Tri-state health query for one node, for use by a completion-tracking
+  /// Tri-state heartbeat-liveness query for one node, for use by a completion-tracking
   /// consumer (e.g. CompletionTracker) that wants to cross-check a dedicated
-  /// completion signal against health/liveness data.
+  /// completion signal against liveness data.
   ///
-  /// @return true  — node is registered as required AND currently healthy.
-  ///         false — node is registered as required AND currently unhealthy
-  ///                 (timed out / never seen / stale / actionable error, per
-  ///                 gate_block_reason()).
+  /// @return true  — node is registered as required and its heartbeat is current.
+  ///         false — node is registered as required and is timed out, has never
+  ///                 sent a heartbeat, or has a stale heartbeat, as determined by
+  ///                 liveness_block_reason().
   ///         nullopt — node is NOT registered as required (e.g. listed in a
   ///                 caller's own coordinated-node list but not in this
   ///                 monitor's required_nodes) — the manager cannot
-  ///                 cross-check health for a node it isn't monitoring.
+  ///                 cross-check liveness for a node it isn't monitoring.
   ///
-  /// INCOMPLETE, and the gap is deliberate rather than overlooked: manual_mode_active is pinned
-  /// false here, so the manual-mode ERROR bypass applies to the RESET gate ONLY. An operator who
-  /// has configured the bypass is admitted out of STOPPED and the ensuing coordinated wait then
-  /// fails that same node on `last_action > WARN`, aborting the transition. Extending the bypass
-  /// end-to-end means deciding whether this predicate answers "may the machine proceed" (policy,
-  /// so it needs the mode) or "will this node still answer" (liveness, so `last_action` does not
-  /// belong in it at all) -- the second reading is what CompletionTracker's own predicate assumes.
+  /// This query does not inspect `last_action`. A current heartbeat returns true
+  /// even when the node reports an actionable error. gate_block_reason() applies
+  /// the actionable-error policy and the manual-mode bypass separately.
   std::optional<bool> is_node_healthy(const std::string & name) const
   {
     std::lock_guard<std::mutex> lk(nodes_mutex_);
@@ -436,7 +432,7 @@ public:
       return std::nullopt;
     }
     const auto now = std::chrono::steady_clock::now();
-    return gate_block_reason(it->second, /*manual_mode_active=*/false, now) == nullptr;
+    return liveness_block_reason(it->second, now) == nullptr;
   }
 
 private:
@@ -547,16 +543,12 @@ private:
       : static_cast<uint32_t>(t);
   }
 
-  /// Reason a required node currently blocks the STOPPED gate, or nullptr if it
-  /// does not.  Single source of truth shared by can_transition_from_stopped()
-  /// and gate_block_summary() so the two can never drift.
-  ///
-  /// Detects a stale heartbeat INLINE (elapsed >= timeout) rather than trusting
-  /// only the cached timed_out flag, so the gate stays correct even if
-  /// check_timeouts() has not run recently.  Must be called with nodes_mutex_ held.
-  const char * gate_block_reason(
+  /// Reason a required node fails the heartbeat-liveness check, or nullptr if it
+  /// passes. Detects an overdue heartbeat inline instead of relying only on the
+  /// cached timed_out flag. Does not inspect last_action. Must be called with
+  /// nodes_mutex_ held.
+  const char * liveness_block_reason(
     const TrackedNode & node,
-    bool manual_mode_active,
     std::chrono::steady_clock::time_point now) const
   {
     if (!node.is_required) {
@@ -575,7 +567,22 @@ private:
       // has not yet run to formally flag it (so no ABORT has fired for it yet).
       return "heartbeat stale";   // Non-bypassable — beat overdue, timeout not yet confirmed.
     }
-    if (!manual_mode_active && node.last_action > NodeHealth::WARN) {
+    return nullptr;
+  }
+
+  /// Reason a required node blocks the STOPPED gate, or nullptr if it does not.
+  /// Combines heartbeat liveness with actionable-error policy. The manual-mode
+  /// bypass applies only to actionable errors. Shared by can_transition_from_stopped()
+  /// and gate_block_summary(). Must be called with nodes_mutex_ held.
+  const char * gate_block_reason(
+    const TrackedNode & node,
+    bool manual_mode_active,
+    std::chrono::steady_clock::time_point now) const
+  {
+    if (const char * reason = liveness_block_reason(node, now)) {
+      return reason;
+    }
+    if (node.is_required && !manual_mode_active && node.last_action > NodeHealth::WARN) {
       return "unhealthy";   // Actionable error — bypassed only in manual mode.
     }
     return nullptr;
