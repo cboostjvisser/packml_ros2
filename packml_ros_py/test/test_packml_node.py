@@ -463,6 +463,43 @@ class TestStateTransitionAction:
         action_client.destroy()
         node.destroy_node()
 
+    def test_deferred_hook_can_read_its_per_state_timeout(self, client_node, executor):
+        """The override is declared before the deferred hook is dispatched."""
+        observed = []
+
+        class DeadlineAwareNode(PackmlNode):
+            def __init__(self):
+                super().__init__(
+                    'deadline_aware_node',
+                    parameter_overrides=[Parameter(
+                        f'{PARAM_DEFERRED_COMPLETION_TIMEOUT_MS}.RESETTING', value=410000)],
+                )
+
+            def defers_completion(self, state):
+                return state == State.RESETTING
+
+            def on_deferred_work(self, state, completion):
+                name = f'{PARAM_DEFERRED_COMPLETION_TIMEOUT_MS}.{state.name}'
+                observed.append(self.get_parameter(name).value)
+                completion.report(True)
+
+        node = DeadlineAwareNode()
+        executor.add_node(node)
+        action_client = ActionClient(
+            client_node, StateTransitionAction,
+            f'/deadline_aware_node/{STATE_TRANSITION_ACTION}')
+        assert action_client.wait_for_server(timeout_sec=2.0)
+
+        goal_handle, result = _send_state_goal(
+            action_client, executor, int(State.RESETTING), timeout_sec=3.0)
+
+        assert goal_handle is not None and goal_handle.accepted
+        assert result is not None and result.success is True
+        assert observed == [410000]
+
+        action_client.destroy()
+        node.destroy_node()
+
 
 class TestModeTransitionService:
     """Test the ~/packml_mode_transition service handling."""

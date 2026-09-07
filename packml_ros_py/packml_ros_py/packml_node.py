@@ -476,6 +476,10 @@ class PackmlNode(Node):
         # wait.
         deferral = Deferral(self._completion_signal, target)
 
+        # Declare and cache the override before dispatching the hook. A hook may use the same
+        # parameter to keep its own deadline inside this deferred-completion safety net.
+        self._deferred_completion_timeout_s_for(target)
+
         # Synchronously, for the same reason the accept decision above runs here: this is what
         # dispatches the node's own commanded work, and the work has to be under way before the
         # manager's status echo can arrive. Reporting from inside the hook is fine -- the record
