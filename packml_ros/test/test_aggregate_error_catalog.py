@@ -666,6 +666,43 @@ nodes:
     assert 1001 in globals_seen  # node n code 1 -> base 1000 + 1
 
 
+def test_stop_action_is_accepted_and_preserved_in_all_formats(workdir):
+    write(str(workdir / 'motor.yaml'), """
+node_name: motor
+error_codes:
+  SEVERE_FAULT: 12
+descriptions:
+  SEVERE_FAULT: { action: STOP, severity: ERROR, en: "Severe motor fault" }
+""")
+    map_path = write(str(workdir / 'map.yaml'), f"""
+languages: [en]
+reserved:
+  heartbeat_timeout: {{ global: 1, action: ABORT, en: "Heartbeat lost" }}
+  controlled_stop: {{ global: 2, action: STOP, en: "Controlled stop requested" }}
+nodes:
+  motor:
+    catalog: {workdir / 'motor.yaml'}
+    base: 1000
+""")
+    out_dir = workdir / 'out'
+    result = subprocess.run(
+        [sys.executable, _SCRIPT, '--map', map_path,
+         '--output-dir', str(out_dir), '--strict'],
+        capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    with open(out_dir / 'machine_error_catalog.yaml') as f:
+        catalog = yaml.safe_load(f)
+    assert catalog['reserved']['controlled_stop']['action'] == 'STOP'
+    assert catalog['nodes']['motor']['codes'][12]['action'] == 'STOP'
+    with open(out_dir / 'machine_errors.json') as f:
+        rows = {row['global_code']: row for row in json.load(f)['faults']}
+    assert rows[2]['action'] == 'STOP'
+    assert rows[1012]['action'] == 'STOP'
+    markdown = (out_dir / 'machine_errors.md').read_text()
+    assert '| 1012 | SEVERE_FAULT | STOP |' in markdown
+    assert '| 2 | controlled_stop | STOP |' in markdown
+
+
 def test_cli_strict_fails_build_on_warning(workdir):
     map_path = write(str(workdir / 'map.yaml'), 'languages: [en]\n')  # W8 only
     out_dir = str(workdir / 'out')

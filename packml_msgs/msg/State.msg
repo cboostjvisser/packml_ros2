@@ -28,6 +28,8 @@ int8 SUSPENDING = 13
 int8 UNSUSPENDING = 14
 int8 RESETTING = 15
 int8 COMPLETING = 16
+int8 COMPLETED = 17
+# Compatibility alias for the pre-2022 state name.
 int8 COMPLETE = 17
 
 # msg values

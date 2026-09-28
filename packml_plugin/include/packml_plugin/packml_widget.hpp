@@ -153,6 +153,9 @@ public Q_SLOTS:
   */
   void onStopButton();
 
+  /// End the current production run through COMPLETING.
+  void onCompleteButton();
+
 private:
   // Internal polling infrastructure for periodic status refresh.
   QTimer * poll_timer_ = nullptr;

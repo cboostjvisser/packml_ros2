@@ -103,6 +103,8 @@ namespace packml_ros {
         return packml_sm::TransitionCmd::UNHOLD;
       case packml_msgs::srv::StateChange::Request::UNSUSPEND:
         return packml_sm::TransitionCmd::UNSUSPEND;
+      case packml_msgs::srv::StateChange::Request::COMPLETE:
+        return packml_sm::TransitionCmd::COMPLETE;
       default:
         return packml_sm::TransitionCmd::NO_COMMAND;
     }
@@ -1969,7 +1971,8 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
     // so a non-required node's HOLD/ABORT can start an episode the gate never
     // actually blocked on.
     const bool blocking_severity =
-      ev.is_timeout || ev.severity > packml_msgs::msg::NodeHealth::WARN;
+      ev.is_timeout || packml_ros::health_action_severity(ev.severity) >
+      packml_ros::health_action_severity(packml_msgs::msg::NodeHealth::WARN);
     if (ev.trigger && blocking_severity && active_stop_event_id_ == 0) {
       active_stop_event_id_ = next_stop_event_id_++;
     }
@@ -2010,6 +2013,7 @@ std::shared_ptr<packml_msgs::srv::ModeChange::Request> req,
     switch (health_action) {
       case NodeHealth::HOLD:    cmd = packml_sm::TransitionCmd::HOLD;    break;
       case NodeHealth::SUSPEND: cmd = packml_sm::TransitionCmd::SUSPEND; break;
+      case NodeHealth::STOP:    cmd = packml_sm::TransitionCmd::STOP;    break;
       case NodeHealth::ABORT:   cmd = packml_sm::TransitionCmd::ABORT;   break;
       default:
         RCLCPP_DEBUG(rclcpp::get_logger("packml_ros"),
@@ -2363,15 +2367,10 @@ protected:
     completion_tracker_ = std::make_unique<CompletionTracker>(
       [this](const std::string & name) { return health_monitor_->is_node_healthy(name); });
 
-    // Bind every coordinated acting state EXCEPT EXECUTE: ContinuousCycle::init()
-    // (packml_sm/src/state_machine.cpp) removes the generated EXECUTE→COMPLETING
-    // transition and installs its own EXECUTE→EXECUTE self-loop operation method BEFORE
-    // this init() runs (continuousCycleSM() constructs and initializes the state machine
-    // first — see packml_ros-new.hpp). setOperationMethod() is an unconditional overwrite,
-    // so binding EXECUTE here would silently replace that self-loop with a blocking
-    // multi-node wait on every production iteration. COMPLETING stays bound: it is never
-    // entered under ContinuousCycle, so binding it there is inert dead code, and it
-    // becomes live for a future SingleCycle deployment.
+    // Coordinate each finite acting state, including COMPLETING when Complete ends a batch.
+    // EXECUTE is deliberately excluded: the manager's explicit hold keeps production active
+    // until the orchestrator commands Complete or an operator interrupts it. A successful
+    // Execute callback in a custom machine follows SC to COMPLETING; it is not a product tick.
     static constexpr packml_sm::State kCoordinatedStates[] = {
       packml_sm::State::CLEARING, packml_sm::State::STOPPING, packml_sm::State::RESETTING,
       packml_sm::State::STARTING, packml_sm::State::HOLDING, packml_sm::State::UNHOLDING,

@@ -129,6 +129,12 @@
          </property>
         </widget>
        </item>
+       <item row="4" column="1">
+        <widget class="QPushButton" name="complete_button">
+         <property name="enabled"><bool>false</bool></property>
+         <property name="text"><string>Complete</string></property>
+        </widget>
+       </item>
 <!--
 	<item row="0" column="2">
 	<widget class="QLabel" name="mode_state">
@@ -398,7 +404,7 @@
 	<item row="2" column="8">
 	<widget class="QLabel" name="complete_state">
          <property name="text">
-          <string>Complete: 0.0s</string>
+          <string>Completed: 0.0s</string>
          </property>
         </widget>
 	</item>

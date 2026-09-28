@@ -64,7 +64,7 @@ public:
     {State::SUSPENDED, true},
     {State::UNSUSPENDING, true},
     {State::COMPLETING, true},
-    {State::COMPLETE, true},
+    {State::COMPLETED, true},
   };
 
   // Runtime mode changes are accepted only from STOPPED. The exception for selecting the
@@ -212,7 +212,7 @@ public:
     WaitState *Suspended = WaitState::Suspended(stoppable);
     ActingState *Unsuspending = ActingState::Unsuspending(stoppable, delay_ms);
     ActingState *Completing = ActingState::Completing(stoppable, delay_ms);
-    WaitState *Complete = WaitState::Complete(stoppable);
+    WaitState *Completed = WaitState::Completed(stoppable);
 
     // TODO: We add abortable state because we need to add it to the state
     // machine. But its not official packml state. See if we can save elsewhere
@@ -234,7 +234,7 @@ public:
     add_state(sm, Suspended);
     add_state(sm, Unsuspending);
     add_state(sm, Completing);
-    add_state(sm, Complete);
+    add_state(sm, Completed);
 
     // Create transitions
     // Naming <from state>_<to state>
@@ -247,7 +247,7 @@ public:
     // both have a transition matching the event, the descendant's wins regardless of the order
     // they were added, and the ancestor's eventTest is never consulted. So this edge costs nothing
     // where it is redundant, and it is NOT redundant for the five states inside `abortable` that
-    // are WaitStates rather than ActingStates (Stopped, Idle, Held, Suspended, Complete): those
+    // are WaitStates rather than ActingStates (Stopped, Idle, Held, Suspended, Completed): those
     // get no edge of their own from the loop below, and an error event processed while the machine
     // sits in one of them would otherwise match nothing at all.
     auto abortable_aborting_on_error =
@@ -313,6 +313,11 @@ public:
         generate_transition(Suspended, TransitionType::STATE_COMPLETED);
     Suspending->addTransition(suspending_suspended);
 
+    // ISA-TR88.00.02-2022 permits an operator hold while the unit is suspended.
+    auto suspended_holding =
+        generate_transition(Holding, TransitionType::COMMAND);
+    Suspended->addTransition(suspended_holding);
+
     auto suspended_unsuspending =
         generate_transition(Unsuspending, TransitionType::COMMAND);
     Suspended->addTransition(suspended_unsuspending);
@@ -325,13 +330,19 @@ public:
         generate_transition(Completing, TransitionType::STATE_COMPLETED);
     Execute->addTransition(execute_completing);
 
+    // Complete ends a batch from any production wait state, including an explicit Execute hold.
+    for (PackmlState * source : {static_cast<PackmlState *>(Execute),
+        static_cast<PackmlState *>(Held), static_cast<PackmlState *>(Suspended)}) {
+      source->addTransition(generate_transition(Completing, TransitionType::COMMAND));
+    }
+
     auto completing_complete =
-        generate_transition(Complete, TransitionType::STATE_COMPLETED);
+        generate_transition(Completed, TransitionType::STATE_COMPLETED);
     Completing->addTransition(completing_complete);
 
     auto complete_resetting =
         generate_transition(Resetting, TransitionType::COMMAND);
-    Complete->addTransition(complete_resetting);
+    Completed->addTransition(complete_resetting);
 
     // Every acting state declares where a failure of its own bound operation lands, and OWNS the
     // ERROR transition that takes it there. Derived from the set of acting states rather than
@@ -429,6 +440,10 @@ public:
           transition = CmdTransition::reset();
           break;
         }
+        case State::COMPLETING: {
+          transition = CmdTransition::complete();
+          break;
+        }
         case State::UNDEFINED:
         case State::STOPPED:
         case State::IDLE:
@@ -436,8 +451,7 @@ public:
         case State::EXECUTE:
         case State::ABORTED:
         case State::HELD:
-        case State::COMPLETING:
-        case State::COMPLETE:
+        case State::COMPLETED:
         default: {
             PACKML_WARN("packml_sm", "Fell through Transition switch, returning 'No Command' transition");
             transition = new CmdTransition(TransitionCmd::NO_COMMAND, "No_Command"); // NOLINT, this is how qt works

@@ -289,8 +289,8 @@ class TestInvalidTransitions(unittest.TestCase):
         self.assertEqual(self.plc.get_state(), 'Stopped',
             "CLEAR should transition from ABORTED to STOPPED")
 
-    def test_held_only_unhold_stop_abort_allowed(self):
-        """From HELD: Only UNHOLD, STOP, ABORT are valid."""
+    def test_held_invalid_commands(self):
+        """From HELD: UNHOLD, COMPLETE, STOP, ABORT are valid."""
         self.plc.set_state('Held')
         time.sleep(0.1)
 
@@ -307,15 +307,14 @@ class TestInvalidTransitions(unittest.TestCase):
             self.assertEqual(self.plc.get_state(), 'Held',
                 f"State should remain HELD after invalid cmd {cmd}")
 
-    def test_suspended_only_unsuspend_stop_abort_allowed(self):
-        """From SUSPENDED: Only UNSUSPEND, STOP, ABORT are valid."""
+    def test_suspended_invalid_commands(self):
+        """From SUSPENDED: UNSUSPEND, HOLD, COMPLETE, STOP, ABORT are valid."""
         self.plc.set_state('Suspended')
         time.sleep(0.1)
 
         invalid_cmds = [
             StateChange.Request.RESET,
             StateChange.Request.START,
-            StateChange.Request.HOLD,
             StateChange.Request.UNHOLD,
             StateChange.Request.SUSPEND,    # Already SUSPENDED
             StateChange.Request.CLEAR,
@@ -324,3 +323,16 @@ class TestInvalidTransitions(unittest.TestCase):
             self._send_command(cmd)
             self.assertEqual(self.plc.get_state(), 'Suspended',
                 f"State should remain SUSPENDED after invalid cmd {cmd}")
+
+
+    def test_complete_from_execute_held_and_suspended(self):
+        for state in ('Execute', 'Held', 'Suspended'):
+            with self.subTest(state=state):
+                self.plc.set_state(state)
+                self._send_command(StateChange.Request.COMPLETE)
+                self.assertEqual(self.plc.get_state(), 'Complete')
+
+    def test_hold_from_suspended(self):
+        self.plc.set_state('Suspended')
+        self._send_command(StateChange.Request.HOLD)
+        self.assertEqual(self.plc.get_state(), 'Held')

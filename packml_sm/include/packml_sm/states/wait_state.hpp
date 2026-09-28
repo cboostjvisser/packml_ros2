@@ -33,9 +33,14 @@ struct WaitState : public PackmlState
   {
     return new WaitState(State::HELD, TransitionCmd::UNHOLD, QString(to_string(State::HELD).c_str()), stoppable);
   }
+  static WaitState * Completed(QState * stoppable)
+  {
+    return new WaitState(State::COMPLETED, TransitionCmd::RESET, QString(to_string(State::COMPLETED).c_str()), stoppable);
+  }
+  // Compatibility alias for callers using the pre-2022 factory name.
   static WaitState * Complete(QState * stoppable)
   {
-    return new WaitState(State::COMPLETE, TransitionCmd::RESET, QString(to_string(State::COMPLETE).c_str()), stoppable);
+    return Completed(stoppable);
   }
   static WaitState * Suspended(QState * stoppable)
   {

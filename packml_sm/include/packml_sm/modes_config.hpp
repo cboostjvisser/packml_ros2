@@ -103,7 +103,8 @@ parse_modes_config(const std::string & yaml_file)
     {"SUSPENDED",    State::SUSPENDED},
     {"UNSUSPENDING", State::UNSUSPENDING},
     {"COMPLETING",   State::COMPLETING},
-    {"COMPLETE",     State::COMPLETE},
+    {"COMPLETED",    State::COMPLETED},
+    {"COMPLETE",     State::COMPLETED},  // Legacy configuration spelling.
   };
 
   // All-true defaults used when a state is not listed under a mode mask.

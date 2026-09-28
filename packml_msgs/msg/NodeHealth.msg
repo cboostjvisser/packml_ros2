@@ -17,6 +17,9 @@ int32 WARN=1
 int32 HOLD=2
 int32 SUSPEND=3
 int32 ABORT=4
+# Appended for compatibility: wire values are identifiers, not severity ranks.
+# Reaction priority: ABORT > STOP > HOLD > SUSPEND > WARN > NONE.
+int32 STOP=5
 
 # ------------------------------------------------------------------
 # Fields

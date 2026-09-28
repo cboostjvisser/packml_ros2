@@ -21,14 +21,14 @@
 //
 // PackML accept matrix for the *waiting* states:
 //
-//   State      | RESET | START | STOP | HOLD | UNHOLD | SUSPEND | UNSUSPEND | ABORT | CLEAR
-//   ABORTED    |   .   |   .   |   .  |   .  |    .   |    .    |     .     |   .   |   X
-//   STOPPED    |   X   |   .   |   .  |   .  |    .   |    .    |     .     |   X   |   .
-//   IDLE       |   .   |   X   |   X  |   .  |    .   |    .    |     .     |   X   |   .
-//   EXECUTE    |   .   |   .   |   X  |   X  |    .   |    X    |     .     |   X   |   .
-//   HELD       |   .   |   .   |   X  |   .  |    X   |    .    |     .     |   X   |   .
-//   SUSPENDED  |   .   |   .   |   X  |   .  |    .   |    .    |     X     |   X   |   .
-//   COMPLETE   |   X   |   .   |   X  |   .  |    .   |    .    |     .     |   X   |   .
+//   State      | RESET | START | STOP | HOLD | UNHOLD | SUSPEND | UNSUSPEND | ABORT | CLEAR | COMPLETE
+//   ABORTED    |   .   |   .   |   .  |   .  |    .   |    .    |     .     |   .   |   X |    .
+//   STOPPED    |   X   |   .   |   .  |   .  |    .   |    .    |     .     |   X   |   . |    .
+//   IDLE       |   .   |   X   |   X  |   .  |    .   |    .    |     .     |   X   |   . |    .
+//   EXECUTE    |   .   |   .   |   X  |   X  |    .   |    X    |     .     |   X   |   . |    X
+//   HELD       |   .   |   .   |   X  |   .  |    X   |    .    |     .     |   X   |   . |    X
+//   SUSPENDED  |   .   |   .   |   X  |   X  |    .   |    .    |     X     |   X   |   . |    X
+//   COMPLETED  |   X   |   .   |   X  |   .  |    .   |    .    |     .     |   X   |   . |    .
 //
 // PackML accept matrix for the *acting* states.  An acting state owns no command edge of its
 // own; what it accepts is exactly what it inherits from its ancestors, so the three rows below
@@ -102,6 +102,7 @@ bool issue(packml_sm::StateMachine & sm, TransitionCmd cmd)
     case TransitionCmd::UNSUSPEND: return sm.unsuspend();
     case TransitionCmd::ABORT:     return sm.abort();
     case TransitionCmd::CLEAR:     return sm.clear();
+    case TransitionCmd::COMPLETE:  return sm.complete();
     case TransitionCmd::NO_COMMAND: return false;
   }
   return false;
@@ -137,19 +138,17 @@ bool drive_to(packml_sm::StateMachine & sm, State target)
     if (!sm.suspend()) return false;
     return wait_for_state(sm, State::SUSPENDED, 5s);
   }
-  if (target == State::COMPLETE) {
-    // Need a single-cycle SM to reach COMPLETE; for continuous-cycle we
-    // can't use this path.  Caller must provide a single-cycle SM.
-    return wait_for_state(sm, State::COMPLETE, 5s);
+  if (target == State::COMPLETED) {
+    return sm.complete() && wait_for_state(sm, State::COMPLETED, 5s);
   }
   return false;
 }
 
-// Build a fresh continuous-cycle SM (so EXECUTE doesn't auto-complete).
+// Build a fresh machine with an explicit batch hold in Execute.
 auto fresh_sm()
 {
   auto sm = packml_sm::StateMachine::continuousCycleSM(packml_sm_test::kTestDelayMs);
-  sm->setExecute(std::bind(execute_success_long));
+  sm->setInterruptibleStateOperation(State::EXECUTE, packml_sm_test::execute_hold);
   EXPECT_TRUE(sm->activate());
   return sm;
 }
@@ -196,6 +195,7 @@ TEST(CommandMatrix, AbortedAcceptsOnlyClear)
     {TransitionCmd::UNSUSPEND, false},
     {TransitionCmd::ABORT,     false},
     {TransitionCmd::CLEAR,     true },
+    {TransitionCmd::COMPLETE,  false},
   });
 }
 
@@ -211,6 +211,7 @@ TEST(CommandMatrix, StoppedAcceptsResetAndAbort)
     {TransitionCmd::UNSUSPEND, false},
     {TransitionCmd::ABORT,     true },
     {TransitionCmd::CLEAR,     false},
+    {TransitionCmd::COMPLETE,  false},
   });
 }
 
@@ -226,10 +227,11 @@ TEST(CommandMatrix, IdleAcceptsStartStopAbort)
     {TransitionCmd::UNSUSPEND, false},
     {TransitionCmd::ABORT,     true },
     {TransitionCmd::CLEAR,     false},
+    {TransitionCmd::COMPLETE,  false},
   });
 }
 
-TEST(CommandMatrix, ExecuteAcceptsHoldSuspendStopAbort)
+TEST(CommandMatrix, ExecuteAcceptsHoldSuspendStopAbortComplete)
 {
   check_acceptance(State::EXECUTE, {
     {TransitionCmd::RESET,     false},
@@ -241,10 +243,11 @@ TEST(CommandMatrix, ExecuteAcceptsHoldSuspendStopAbort)
     {TransitionCmd::UNSUSPEND, false},
     {TransitionCmd::ABORT,     true },
     {TransitionCmd::CLEAR,     false},
+    {TransitionCmd::COMPLETE,  true },
   });
 }
 
-TEST(CommandMatrix, HeldAcceptsUnholdStopAbort)
+TEST(CommandMatrix, HeldAcceptsUnholdStopAbortComplete)
 {
   check_acceptance(State::HELD, {
     {TransitionCmd::RESET,     false},
@@ -256,26 +259,27 @@ TEST(CommandMatrix, HeldAcceptsUnholdStopAbort)
     {TransitionCmd::UNSUSPEND, false},
     {TransitionCmd::ABORT,     true },
     {TransitionCmd::CLEAR,     false},
+    {TransitionCmd::COMPLETE,  true },
   });
 }
 
-TEST(CommandMatrix, SuspendedAcceptsUnsuspendStopAbort)
+TEST(CommandMatrix, SuspendedAcceptsUnsuspendHoldStopAbortComplete)
 {
   check_acceptance(State::SUSPENDED, {
     {TransitionCmd::RESET,     false},
     {TransitionCmd::START,     false},
     {TransitionCmd::STOP,      true },
-    {TransitionCmd::HOLD,      false},
+    {TransitionCmd::HOLD,      true },
     {TransitionCmd::UNHOLD,    false},
     {TransitionCmd::SUSPEND,   false},
     {TransitionCmd::UNSUSPEND, true },
     {TransitionCmd::ABORT,     true },
     {TransitionCmd::CLEAR,     false},
+    {TransitionCmd::COMPLETE,  true },
   });
 }
 
-// COMPLETE accepts RESET, STOP, ABORT.
-// Requires a single-cycle SM to reach COMPLETE naturally.
+// COMPLETED accepts RESET, STOP, ABORT. Exercise natural single-cycle completion here.
 TEST(CommandMatrix, CompleteAcceptsResetStopAbort)
 {
   using namespace std::chrono_literals;
@@ -290,6 +294,7 @@ TEST(CommandMatrix, CompleteAcceptsResetStopAbort)
     {TransitionCmd::UNSUSPEND, false},
     {TransitionCmd::ABORT,     true },
     {TransitionCmd::CLEAR,     false},
+    {TransitionCmd::COMPLETE,  false},
   };
   for (const auto & exp : matrix) {
     auto sm = packml_sm::StateMachine::singleCycleSM(packml_sm_test::kTestDelayMs);
@@ -349,11 +354,11 @@ std::shared_ptr<packml_sm::StateMachine> fresh_sm_holding(
   auto sm = single_cycle
     ? packml_sm::StateMachine::singleCycleSM(packml_sm_test::kTestDelayMs)
     : packml_sm::StateMachine::continuousCycleSM(packml_sm_test::kTestDelayMs);
-  // COMPLETING is only reachable once EXECUTE finishes, so that one case needs EXECUTE to be
-  // quick rather than deliberately slow.
-  sm->setExecute(single_cycle
-    ? std::function<int()>(packml_sm_test::execute_success_fast)
-    : std::function<int()>(packml_sm_test::execute_success_long));
+  if (single_cycle) {
+    sm->setExecute(packml_sm_test::execute_success_fast);
+  } else {
+    sm->setInterruptibleStateOperation(State::EXECUTE, packml_sm_test::execute_hold);
+  }
   sm->setInterruptibleStateOperation(acting, [gate](std::stop_token tok) -> int {
       const auto cap = std::chrono::steady_clock::now() + std::chrono::seconds(10);
       while (!tok.stop_requested() && std::chrono::steady_clock::now() < cap) {
@@ -481,6 +486,7 @@ std::vector<CommandExpectation> stoppable_acting_matrix()
     {TransitionCmd::UNSUSPEND, false},
     {TransitionCmd::ABORT,     true },
     {TransitionCmd::CLEAR,     false},
+    {TransitionCmd::COMPLETE,  false},
   };
 }
 
@@ -540,7 +546,7 @@ TEST(CommandMatrix, StoppingAcceptsOnlyAbort)
   check_acting_acceptance(State::STOPPING, abortable_only_acting_matrix());
 }
 
-// ABORTING inherits no command edge from any ancestor, so every one of the nine must be refused
+// ABORTING inherits no command edge from any ancestor, so every command must be refused
 // and the machine must stay in ABORTING. Its only exit is State Complete, to ABORTED.
 TEST(CommandMatrix, AbortingAcceptsNothing)
 {

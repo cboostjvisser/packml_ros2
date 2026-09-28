@@ -65,6 +65,7 @@ class DriverSender(Node):
             StateChange.Request.SUSPEND:    'Cmd_Suspend',
             StateChange.Request.UNHOLD:     'Cmd_Unhold',
             StateChange.Request.UNSUSPEND:  'Cmd_Unsuspend',
+            StateChange.Request.COMPLETE:   'Cmd_Complete',
         }
         try:
             if command_int in command_map:

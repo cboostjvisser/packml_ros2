@@ -26,7 +26,7 @@ state_masks:
     SUSPENDED: true
     UNSUSPENDING: true
     COMPLETING: true
-    COMPLETE: true
+    COMPLETED: true
   Maintenance:
     ABORTING: true
     ABORTED: true
@@ -44,7 +44,7 @@ state_masks:
     SUSPENDED: true
     UNSUSPENDING: true
     COMPLETING: false
-    COMPLETE: false
+    COMPLETED: false
   Manual:
     ABORTING: true
     ABORTED: true
@@ -62,4 +62,4 @@ state_masks:
     SUSPENDED: true
     UNSUSPENDING: true
     COMPLETING: true
-    COMPLETE: true
+    COMPLETED: true

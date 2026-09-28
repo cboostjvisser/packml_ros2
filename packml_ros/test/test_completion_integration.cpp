@@ -598,3 +598,29 @@ TEST(EmSideShutdownDrainTest, DestroyingAModuleMidDeferralIsPromptAndSafe)
     << " ms — it waited out the deferred-completion timeout instead of asking the in-flight wait "
        "to give up first";
 }
+
+
+TEST_F(CompletionIntegrationTest, CompleteWaitsForEquipmentModuleWork)
+{
+  using Request = packml_msgs::srv::StateChange::Request;
+  using State = packml_sm::State;
+  auto response = send_state_change(state_client_, Request::RESET);
+  ASSERT_NE(response, nullptr);
+  ASSERT_TRUE(response->success);
+  ASSERT_TRUE(wait_for_sm_state(State::IDLE, 1s));
+  response = send_state_change(state_client_, Request::START);
+  ASSERT_NE(response, nullptr);
+  ASSERT_TRUE(response->success);
+  ASSERT_TRUE(wait_for_sm_state(State::EXECUTE, 1s));
+
+  em_->defer.store(true);
+  response = send_state_change(state_client_, Request::COMPLETE);
+  ASSERT_NE(response, nullptr);
+  ASSERT_TRUE(response->success) << response->message;
+  ASSERT_TRUE(wait_for_sm_state(State::COMPLETING, 500ms));
+  ASSERT_TRUE(em_->pending.wait_for_accept(State::COMPLETING, 300ms));
+  EXPECT_EQ(sm_node_->getCurrentState(), State::COMPLETING);
+  ASSERT_TRUE(em_->pending.report(State::COMPLETING, true));
+  // COMPLETED is a wait state; only COMPLETING requires work to finish.
+  EXPECT_TRUE(wait_for_sm_state(State::COMPLETED, 1s));
+}
