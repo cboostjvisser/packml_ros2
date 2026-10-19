@@ -31,9 +31,9 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(rqt_gui_cpp REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # Include the modes generation function so it can be used during this build.
 include(cmake/packml_sm_generate_modes.cmake)
@@ -44,7 +44,7 @@ include(cmake/packml_sm_generate_modes.cmake)
 #   include
 # )
 
-qt5_wrap_cpp(packml_sm_MOCS
+qt5_wrap_cpp(${PROJECT_NAME}_MOCS
   include/packml_sm/state_machine.hpp
 
   include/packml_sm/states/state.hpp
@@ -76,17 +76,14 @@ add_library(${PROJECT_NAME} SHARED
 
   src/state_machine.cpp
 
-  ${packml_sm_MOCS})
+  ${${PROJECT_NAME}_MOCS})
 
 target_link_libraries(
   ${PROJECT_NAME}
-  PUBLIC rclcpp::rclcpp
-          # ${rqt_gui_cpp_TARGETS}
-          Qt5::Core
-          Qt5::Gui)
+  PUBLIC Qt5::Core
+         Qt5::Gui
+         yaml-cpp)
 
-
-ament_target_dependencies(${PROJECT_NAME} PUBLIC rqt_gui_cpp)
 
 target_include_directories(
     ${PROJECT_NAME}
@@ -95,11 +92,32 @@ target_include_directories(
 
 target_cxx_version(${PROJECT_NAME} PUBLIC VERSION 23)
 
-# Generate the default PackML modes header from the yaml file.
-packml_sm_generate_modes(${PROJECT_NAME} modes/default_modes.yaml)
+# Generate the default PackML modes header (and Python module) from the yaml file.
+set(_packml_modes_py_dir "${CMAKE_CURRENT_BINARY_DIR}/packml_modes/python")
+packml_sm_generate_modes(${PROJECT_NAME} modes/default_modes.yaml
+  INCLUDE_PREFIX ${PROJECT_NAME}
+  PYTHON_OUTPUT "${_packml_modes_py_dir}")
+
+# Determine Python install directory (ament convention: lib/pythonX.Y/site-packages)
+if(NOT DEFINED PYTHON_INSTALL_DIR)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  set(PYTHON_INSTALL_DIR "lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages")
+endif()
+
+# Install the generated packml_modes Python package.
+install(DIRECTORY "${_packml_modes_py_dir}/packml_modes"
+  DESTINATION "${PYTHON_INSTALL_DIR}"
+  PATTERN "__pycache__" EXCLUDE
+)
 
 #install
 install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
+
+# Install the generated modes header alongside the package's own headers.
+install(
+  FILES "${CMAKE_CURRENT_BINARY_DIR}/packml_modes/include/${PROJECT_NAME}/default_modes.hpp"
+  DESTINATION "include/${PROJECT_NAME}/${PROJECT_NAME}"
+)
 
 install(
   FILES
@@ -121,16 +139,34 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 
   find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(${PROJECT_NAME}_utest test/utest.cpp)
+
+  # All packml_sm tests share a single Qt bootstrap (test/test_main.cpp).
+  # Tests are split by concern; each file contains gtest TEST cases targeting
+  # one slice of the PackML specification.
+  # TIMEOUT 240 -- the suite's CommandMatrix tests sweep every command across
+  # every state with a 200 ms acting-state default delay, plus the per-test
+  # deactivate teardown adds ~350 ms each.  35 tests x avg 2 s ~ 90 s; allow
+  # generous headroom on slow CI runners.
+  ament_add_gtest(${PROJECT_NAME}_tests
+    test/test_main.cpp
+    test/test_lifecycle.cpp
+    test/test_state_transitions.cpp
+    test/test_commands.cpp
+    test/test_modes.cpp
+    test/test_modes_registry.cpp
+    test/test_errors.cpp
+    test/test_event_identity.cpp
+    test/test_command_bridge.cpp
+    test/test_logging.cpp
+    TIMEOUT 240)
 
   target_include_directories(
-      ${PROJECT_NAME}_utest
+      ${PROJECT_NAME}_tests
       PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-                              $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
+             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
+             $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
 
-  # ament_target_dependencies(${PROJECT_NAME}_utest rclcpp rqt_gui_cpp Qt5)
-
-  target_link_libraries(${PROJECT_NAME}_utest ${PROJECT_NAME} rclcpp::rclcpp Qt5::Core Qt5::Gui)
+  target_link_libraries(${PROJECT_NAME}_tests ${PROJECT_NAME} Qt5::Core Qt5::Gui)
 endif()
 
 #Substituting the catkin_package () components:
@@ -140,5 +176,4 @@ endif()
 # ament_export_libraries(${PROJECT_NAME})
 #CATKIN_DEPENDS
 ament_export_targets(${PROJECT_NAME}-targets HAS_LIBRARY_TARGET)
-ament_export_dependencies(rqt_gui_cpp)
 ament_package(CONFIG_EXTRAS cmake/packml_sm-extras.cmake)

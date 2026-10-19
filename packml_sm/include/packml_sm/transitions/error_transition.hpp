@@ -58,7 +58,7 @@ protected:
   * @brief Function to trigger an action when the transition is happening
   * @param e - triggering event
   */
-  virtual void onTransition(QEvent * e) {RCLCPP_DEBUG(rclcpp::get_logger("packml_sm"), "Error transition triggered, event pointer: %p", static_cast<void*>(e));}
+  virtual void onTransition(QEvent * e) {PACKML_DEBUG("packml_sm", "Error transition triggered, event pointer: %p", static_cast<void*>(e));}
 };
 
 }  // namespace packml_sm

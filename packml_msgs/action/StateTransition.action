@@ -1,0 +1,25 @@
+# Trigger a State change on a PackML Node (Equipment Module).
+#
+# Unlike a plain service, the result is not returned when the transition is merely
+# accepted -- it is returned when the node's own commanded work for `state` has
+# genuinely finished (default: immediately after acceptance, matching a node that
+# does not override defers_completion()) or failed outright. The action's own
+# goal id is the correlation mechanism a manager-side aggregator needs to tell
+# "an answer to the cycle I am currently waiting on" apart from a stale or
+# superseded one -- no separate generation/sequence field is needed on the wire.
+
+State state
+
+---
+# PackML Node Response
+bool success    # True if the node's work for `state` completed successfully.
+int8 error_code # Error code if the transition was rejected or the work failed.
+string message  # Message for display (only for human reading)
+
+# Error Codes
+int8 SUCCESS = 1
+int8 INVALID_STATE_REQUEST = -1
+
+---
+# No feedback defined -- PackML's SC (state complete) signal has no standard
+# progress concept; reserved for future use.

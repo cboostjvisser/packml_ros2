@@ -20,18 +20,25 @@
 import time
 
 from opcua import Client, ua
-from packml_msgs.srv import Transition
+from packml_msgs.srv import StateChange
 import rclpy
 from rclpy.node import Node
 
 
 class DriverSender(Node):
-    """This class controls the PLC's SM transition by pressing buttons on the GUI."""
+    """
+    This class sends PackML state change commands from ROS2 to the PLC via OPC UA.
+    Each command is mapped to a specific OPC UA node, following the command names/order defined in the packml_sm library.
+    """
 
-    def __init__(self):
+    def __init__(self, endpoint=None):
         super().__init__('driver_sender')
-        self.srv = self.create_service(Transition, 'transition', self.trans_request)
-        self.client = Client('opc.tcp://192.168.125.2:4840/freeopcua/server/')
+        # TODO: choose; ROS Parameter or function parameter
+        self.declare_parameter('opcua_endpoint', 'opc.tcp://127.0.0.1:4840/freeopcua/server/')
+        if endpoint is None:
+            endpoint = self.get_parameter('opcua_endpoint').get_parameter_value().string_value
+        self.srv = self.create_service(StateChange, 'transition', self.trans_request)
+        self.client = Client(endpoint)
 
     def connect(self):
         self.client.connect()
@@ -40,98 +47,46 @@ class DriverSender(Node):
         self.client.disconnect()
 
     def trans_request(self, req, res):
+        """
+        Receives a state change request from ROS2 and writes the corresponding PackML command to the PLC.
+        Sends a short True pulse on the command tag, then resets it to False.
+        """
         command_rtn = False
         command_valid = True
         command_int = req.command
-        print('Evaluating transition request command: ' + str(command_int))
+        # Mapping from StateChange.Request enum to OPC UA node names (packml_sm order)
+        command_map = {
+            StateChange.Request.ABORT:      'Cmd_Abort',
+            StateChange.Request.CLEAR:      'Cmd_Clear',
+            StateChange.Request.HOLD:       'Cmd_Hold',
+            StateChange.Request.RESET:      'Cmd_Reset',
+            StateChange.Request.START:      'Cmd_Start',
+            StateChange.Request.STOP:       'Cmd_Stop',
+            StateChange.Request.SUSPEND:    'Cmd_Suspend',
+            StateChange.Request.UNHOLD:     'Cmd_Unhold',
+            StateChange.Request.UNSUSPEND:  'Cmd_Unsuspend',
+        }
         try:
-            if command_int == 5:
-                cmd_abort = self.client.get_node('ns=3;' +
-                                                 's=\"PackML_Status\".\"EM00\"' +
-                                                 '.\"Unit\".\"Cmd_Abort\"')
-                cmd_abort.set_attribute(ua.AttributeIds.Value, ua.DataValue(True))
+            if command_int in command_map:
+                cmd_name = command_map[command_int]
+                # Original node: 'ns=3;' + 's=\"PackML_Status\".\"EM00\"' + '.\"Unit\".\"Cmd_Abort\"'
+                node = self.client.get_node(f'ns=3;s="PackML_Status"."EM00"."Unit"."{cmd_name}"')
+
+                # Write a short pulse so PLC logic can consume edge-like command semantics.
+                result = node.set_attribute(ua.AttributeIds.Value, ua.DataValue(True))
+                self.get_logger().info(f'Sending {cmd_name} Command, result={result}')
                 time.sleep(0.1)
-                print('Sending Abort Command . . .')
-                command_rtn = True
-            elif command_int == 7:
-                cmd_stop = self.client.get_node('ns=3;' +
-                                                's=\"PackML_Status\".\"EM00\".' +
-                                                '\"Unit\".\"Cmd_Stop\""')
-                cmd_stop.set_attribute(ua.AttributeIds.Value, ua.DataValue(True))
-                time.sleep(0.1)
-                print('Sending Stop Command . . .')
-                command_rtn = True
-            elif command_int == 1:
-                cmd_clear = self.client.get_node('ns=3;' +
-                                                 's=\"PackML_Status\".\"EM00\".' +
-                                                 '\"Unit\".\"Cmd_Clear\"')
-                cmd_clear.set_attribute(ua.AttributeIds.Value, ua.DataValue(True))
-                time.sleep(0.1)
-                print('Sending Clear Command . . .')
-                command_rtn = True
-            elif command_int == 4:
-                cmd_hold = self.client.get_node('ns=3;' +
-                                                's=\"PackML_Status\".\"EM00\".' +
-                                                '\"Unit\".\"Cmd_Hold\"')
-                cmd_hold.set_attribute(ua.AttributeIds.Value, ua.DataValue(True))
-                time.sleep(0.1)
-                print('Sending Hold Command . . .')
-                command_rtn = True
-            elif command_int == 6:
-                cmd_reset = self.client.get_node('ns=3;' +
-                                                 's=\"PackML_Status\".\"EM00\".' +
-                                                 '\"Unit\".\"Cmd_Reset\"')
-                cmd_reset.set_attribute(ua.AttributeIds.Value, ua.DataValue(True))
-                time.sleep(0.1)
-                print('Sending Reset Command . . .')
-                command_rtn = True
-            elif command_int == 2:
-                cmd_start = self.client.get_node('ns=3;' +
-                                                 's=\"PackML_Status\".\"EM00\".' +
-                                                 '\"Unit\".\"Cmd_Start\"')
-                cmd_start.set_attribute(ua.AttributeIds.Value, ua.DataValue(True))
-                time.sleep(0.1)
-                print('Sending Start Command . . .')
-                command_rtn = True
-            elif command_int == 3:
-                cmd_stop = self.client.get_node('ns=3;' +
-                                                's=\"PackML_Status\".\"EM00\".' +
-                                                '\"Unit\".\"Cmd_Stop\"')
-                cmd_stop.set_attribute(ua.AttributeIds.Value, ua.DataValue(True))
-                time.sleep(0.05)
-                print('Sending Stop Command . . .')
-                command_rtn = True
-            elif command_int == 100:
-                cmd_suspend = self.client.get_node('ns=3;' +
-                                                   's=\"PackML_Status\".\"EM00\".' +
-                                                   '\"Unit\".\"Cmd_Suspend\"')
-                cmd_suspend.set_attribute(ua.AttributeIds.Value, ua.DataValue(True))
-                time.sleep(0.1)
-                print('Sending Suspend Command . . .')
-                command_rtn = True
-            elif command_int == 102:
-                cmd_unhold = self.client.get_node('ns=3;' +
-                                                  's=\"PackML_Status\".\"EM00\".' +
-                                                  '\"Unit\".\"Cmd_Unhold\"')
-                cmd_unhold.set_attribute(ua.AttributeIds.Value, ua.DataValue(True))
-                time.sleep(0.1)
-                print('Sending Unhold Command . . .')
-                command_rtn = True
-            elif command_int == 101:
-                cmd_unsuspend = self.client.get_node('ns=3;' +
-                                                     's=\"PackML_Status\".\"EM00\".' +
-                                                     '\"Unit\".\"Cmd_Unsuspend\"')
-                cmd_unsuspend.set_attribute(ua.AttributeIds.Value, ua.DataValue(True))
-                time.sleep(0.1)
-                print('Sending Unsuspend Command . . .')
+                node.set_attribute(ua.AttributeIds.Value, ua.DataValue(False))
                 command_rtn = True
             else:
+                self.get_logger().error(f"Unsupported or unrecognized command: {command_int}")
                 command_valid = False
-        except KeyboardInterrupt:
-            pass
+        except Exception as ex:
+            self.get_logger().error(f"Exception while sending command: {ex}")
+            command_valid = False
         if command_valid:
             if command_rtn:
-                print('Successful transition request command: ' + str(command_int))
+                self.get_logger().info(f'Successful transition request command: {command_int}')
                 res.success = True
                 res.error_code = res.SUCCESS
             else:
@@ -139,7 +94,7 @@ class DriverSender(Node):
                 res.error_code = res.INVALID_TRANSITION_REQUEST
         else:
             res.success = False
-            res.error_code = res.UNRECGONIZED_REQUEST
+            res.error_code = res.UNRECOGNIZED_REQUEST
         return res
 
 

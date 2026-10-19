@@ -15,7 +15,7 @@
 //
 
 #include "QEvent"
-#include "rclcpp/rclcpp.hpp"
+#include "packml_sm/logging.hpp"
 #include "packml_sm/transitions/error_transition.hpp"
 #include "packml_sm/events/error_event.hpp"
 
@@ -24,7 +24,7 @@ namespace packml_sm {
 ErrorTransition::ErrorTransition(PackmlState &from, PackmlState &to) {
   this->setTargetState(&to);
   from.addTransition(this);
-  RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Creating error transition from " << from.name()
+  PACKML_INFO_STREAM("packml_sm", "Creating error transition from " << from.name()
             << " to " << to.name());
 }
 
@@ -33,15 +33,18 @@ bool ErrorTransition::eventTest(QEvent *e) {
     return false;
   }
 
-  // call parent function to test if transition is available
-  bool available = PackmlTransition::eventTest(e);
-
-  if (!available)
-  {
-    return false;
-  }
-
-  return true;
+  // Deliberately does NOT consult the mode mask -- and this one is a safety property, not just
+  // a correctness one. A fault must always be able to escalate; a mode that could suppress the
+  // error path would mean configuration deciding whether the machine is allowed to react to a
+  // fault at all. Calling the base's eventTest() from here would apply that check, so masking
+  // ABORTING would silently disarm error escalation from every abortable state.
+  //
+  // The same principle sets how much of the event's identity is checked: only enough to keep the
+  // fault from being blamed on a state that did not raise it. NOT whether the fault is still
+  // current -- a late fault is a real fault, and it escalates through the nearest enclosing
+  // superstate instead. Contrast StateCompleteTransition, which discards a stale completion,
+  // because acting on a completion that has been overtaken means skipping real work.
+  return fault_may_be_attributed_here(static_cast<ErrorEvent *>(e)->token);
 }
 
 } // namespace packml_sm

@@ -1,0 +1,40 @@
+# Copyright (c) 2026 PackML ROS2 Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# ---
+# Integration map for packml_health_demo.launch.py — aggregated at build time
+# by packml_ros_aggregate_error_catalog() (see packml_ros2/CMakeLists.txt)
+# into machine_error_catalog.yaml, loaded by the manager via the
+# `error_catalog_file` launch parameter.
+languages: [en]
+reserved:
+  # No {instance} placeholder: a heartbeat timeout is node-level, never
+  # instanced (see AlarmEvent::instance_id in health_monitor.hpp) — it always
+  # resolves with a blank instance_id, so an instanced template here would
+  # always render as "(unspecified)".
+  heartbeat_timeout:
+    global: 1
+    severity: CRITICAL
+    action: ABORT
+    en: "Heartbeat lost — required node stopped responding"
+nodes:
+  demo_motor_driver:
+    catalog: package://packml_ros/config/error_catalog.yaml
+    base: 1000
+  demo_sensor_hub:
+    catalog: package://packml_ros/config/error_catalog.yaml
+    base: 2000
+  demo_conveyor:
+    catalog: package://packml_ros/config/error_catalog.yaml
+    base: 3000

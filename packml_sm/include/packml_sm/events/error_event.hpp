@@ -18,23 +18,29 @@
 
 #include "QEvent"
 #include "QString"
+#include "packml_sm/events/activation_token.hpp"
 
 namespace packml_sm {
 
 static int PACKML_ERROR_EVENT_TYPE = QEvent::User + 3;
 
 struct ErrorEvent : public QEvent {
-  explicit ErrorEvent(const int &code_value)
+  explicit ErrorEvent(const int &code_value, const ActivationToken &token_value = {})
       : QEvent(QEvent::Type(PACKML_ERROR_EVENT_TYPE)), code(code_value), name(),
-        description() {}
+        description(), token(token_value) {}
 
   ErrorEvent(const int &code_value, const QString &name_value,
-             const QString &description_value)
+             const QString &description_value,
+             const ActivationToken &token_value = {})
       : QEvent(QEvent::Type(PACKML_ERROR_EVENT_TYPE)), code(code_value),
-        name(name_value), description(description_value) {}
+        name(name_value), description(description_value), token(token_value) {}
 
   int code;
   QString name;
   QString description;
+  // Which state raised the fault. Used only to stop the fault being ATTRIBUTED to a state that
+  // did not raise it -- unlike a completion, a fault is never discarded for being late. See
+  // ErrorTransition::eventTest().
+  ActivationToken token;
 };
 } // namespace packml_sm

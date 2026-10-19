@@ -33,12 +33,16 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Status.msg"
   "msg/AllTimes.msg"
   "msg/AllStatus.msg"
+  "msg/NodeHealth.msg"
+  "msg/NodeHeartbeat.msg"
+  "msg/Alarm.msg"
 
   "srv/ModeChange.srv"
   "srv/ModeTransition.srv"
   "srv/StateChange.srv"
-  "srv/StateTransition.srv"
   "srv/AllStatus.srv"
+
+  "action/StateTransition.action"
   # DEPENDENCIES builtin_interfaces
 )
 

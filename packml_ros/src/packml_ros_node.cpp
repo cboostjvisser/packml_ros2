@@ -35,7 +35,18 @@ int main(int argc, char * argv[])
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
   thr.detach();
-  SMNode_new thenode(node);
-  rclcpp::spin(node);
+
+  // Construction fails if the state machine cannot start. Exiting non-zero is the whole point:
+  // an unhandled exception here would abort() with a core dump, and a node that stayed up would
+  // advertise services it can never honour. A non-zero exit is what a launch file's
+  // on_exit/respawn and a systemd unit both already know how to act on.
+  try {
+    SMNode_new thenode(node);
+    rclcpp::spin(node);
+  } catch (const std::exception & e) {
+    RCLCPP_FATAL_STREAM(node->get_logger(), "packml_ros_node is shutting down: " << e.what());
+    rclcpp::shutdown();
+    return 1;
+  }
   return 0;
 }

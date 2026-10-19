@@ -39,11 +39,13 @@ public:
   */
   explicit PackmlPlugin(QWidget * parent = 0);
 
-
   /**
   * @brief Destructor of the class
   */
   ~PackmlPlugin() override = default;
+
+  void load(const rviz_common::Config & config) override;
+  void save(rviz_common::Config config) const override;
 
 protected:
   /**
@@ -56,6 +58,12 @@ protected:
   * @brief Pointer to the Widget object
   */
   PackmlWidget * widget_;
+
+  // Plugin-level copies are persisted by RViz load/save and then passed to the widget.
+  QString transition_service_ = "/transition";
+  QString status_service_ = "/allStatus";
+  QString status_source_ = "service";
+  QString status_topic_ = "/packml_status";
 };
 
 #endif  // PACKML_PLUGIN__PACKML_PLUGIN_HPP_

@@ -16,7 +16,7 @@
 
 #include "QEvent"
 
-#include "rclcpp/rclcpp.hpp"
+#include "packml_sm/logging.hpp"
 #include "packml_sm/events/cmd_event.hpp"
 #include "packml_sm/transitions/cmd_transition.hpp"
 
@@ -27,7 +27,7 @@ CmdTransition::CmdTransition(const TransitionCmd &cmd_value,
     : cmd(cmd_value), name(name_value) {
   this->setTargetState(&to);
   from.addTransition(this);
-  RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_sm"), "Creating " << this->name.toStdString() << " transition from "
+  PACKML_INFO_STREAM("packml_sm", "Creating " << this->name.toStdString() << " transition from "
             << from.name() << " to " << to.name());
 }
 
@@ -39,28 +39,29 @@ bool CmdTransition::eventTest(QEvent *e) {
   }
   CmdEvent *se = static_cast<CmdEvent *>(e);
 
-  RCLCPP_DEBUG_STREAM(rclcpp::get_logger("packml_sm"), "Received transition command: " << se->cmd
+  PACKML_DEBUG_STREAM("packml_sm", "Received transition command: " << se->cmd
             << " on transition: " << this->name.toStdString());
 
-  // call parent function to test if transition is available
-  bool available = PackmlTransition::eventTest(e);
-
-  if (!available)
-  {
+  // Whose command this is comes first. Asking the mode mask about a command this transition was
+  // never for recorded a mask refusal against it -- so every unrelated command in flight looked,
+  // in the log, like one the mode had blocked.
+  //
+  // Returning without ignore() is only safe because CmdEvent is constructed already refused, so
+  // accept() below is the single thing that can mark a command claimed. Restore the event's
+  // born-accepted default and this early return silently reports every command as successful.
+  if (cmd != se->cmd) {
+    PACKML_DEBUG_STREAM("packml_sm", "Event is not for this transition");
     return false;
   }
 
-  //    ROS_INFO_STREAM("Type cmd: " << cmd << ", event cmd: " << se->cmd);
-  if (cmd == se->cmd) {
-    e->accept();
-    return true;
+  // A mode declares which states an operator may command the machine INTO, so this is the
+  // one transition kind that consults the mask. See target_available_in_current_mode().
+  if (!target_available_in_current_mode(e)) {
+    return false;
   }
 
-  RCLCPP_DEBUG_STREAM(rclcpp::get_logger("packml_sm"), "Event is not for this transition");
-
-  e->ignore();
-
-  return false;
+  e->accept();
+  return true;
 }
 
 } // namespace packml_sm

@@ -13,21 +13,26 @@ Finally, the package contains an example of the interface of the RViz2 plugin wi
 ## List of packages
 * `packml_plugin`: RViz2 plugin for PackML state machine standard template visualization and control
 * `packml_sm`: Simulator library in C++ ported to ROS 2 from the original PackML repository in ROS 1. Two types of state machines, with continuous Execute state and with timed Execute state.
-* `packml_msgs`: Service type definitions for states, transitions and GUI control
-* `packml_ros`: ROS 2 node in C++ to run the simulator library and communicate with the RViz2 plugin.
+* `packml_msgs`: Service/message type definitions for states, transitions, GUI control, and node **health** (`NodeHealth`, `NodeHeartbeat`, `Alarm`).
+* `packml_ros`: ROS 2 node in C++ to run the simulator library and communicate with the RViz2 plugin. Also provides the Equipment-Module interface, heartbeat publishing, and the manager-side `HealthMonitor` + health gate.
+* `packml_ros_py`: Python bindings (pybind11) so you can write PackML Nodes (Equipment Modules) in Python with the same shared protocol/heartbeat logic as C++.
 
 Extras:
 * `packml_plc`: Example of a driver in Python to interface with a PackML state machine implemented in a Siemens PLC (with pre-configured OPCUA variable tags according to the PLCs configuration). Direct communication with the RViz2 plugin (receive states and send events to trigger transitions). 
 
 ## Pre-requisites
-* Ubuntu 20.04
-* ROS 2 [Foxy](https://index.ros.org/doc/ros2/Installation/Foxy/)
+* Ubuntu 24.04
+* ROS 2 [Jazzy](https://docs.ros.org/en/jazzy/Installation.html)
+* `ros_industrial_cmake_boilerplate` (build dependency of the C++ packages)
+* `pybind11-stubgen` (optional — generates Python type stubs for `packml_ros_py`):
+
+      pip install pybind11-stubgen
 
 
 ## Build from source
 * Source your ROS environment
 
-      . /opt/ros/foxy/setup.bash
+      . /opt/ros/jazzy/setup.bash
 
 * Setup workspace and install dependencies
 
@@ -103,6 +108,138 @@ By default, no mode names are defined and there is no state configuration. So a 
             case packml_modes::Service:
             // etc.
         }
+
+## Health & heartbeat monitoring
+
+A PackML **Manager** (Machine) can supervise the health of its **Equipment Modules**
+(PackML Nodes) over ROS 2. Each Equipment Module publishes a periodic `NodeHeartbeat`
+carrying a `NodeHealth` (status + recommended PackML action). The manager embeds a
+`HealthMonitor` that:
+
+* **routes faults to the state machine** — a node reporting `HOLD`/`SUSPEND`/`ABORT`
+  drives the corresponding PackML transition (only new/escalating events fire; `WARN`
+  is observed but never transitions);
+* **detects dead nodes** — a required node that stops sending heartbeats times out
+  (`interval × heartbeat_timeout_factor`) and triggers `ABORT`;
+* **enforces a health gate** — `RESET` from `STOPPED` is blocked until every *required*
+  node is healthy and present. A timed-out / never-seen node is **non-bypassable**; an
+  actionable error can be bypassed in MANUAL mode for diagnostics;
+* **publishes alarms** — every raise/update/clear is published on `packml_alarms`
+  (`Alarm.msg`, mirroring the PackML `Admin.Alarm` tag).
+
+Configure the manager with `required_nodes`, `heartbeat_timeout_factor` (default `3.0`),
+`heartbeat_startup_grace_ms` (default `30000`), and — for the MANUAL-mode bypass —
+`manual_mode_allows_health_bypass` (default `false`) plus `manual_mode` (default `-1`).
+Try it end-to-end:
+
+      ros2 launch packml_ros2 packml_health_demo.launch.py
+      # then inject faults at runtime:
+      ros2 param set /demo_motor_driver inject_fault abort     # or: warn | hold | silent | none
+      ros2 param set /demo_sensor_hub   inject_fault range     # SUSPEND (external cause)
+      ros2 param set /demo_conveyor     inject_fault starved   # SUSPEND (external cause)
+
+## Write your own Equipment Module
+
+A third party can write a PackML Node in **C++ or Python** without editing this repo —
+derive from the node interface and override `get_health_status()`:
+
+**C++** (`#include "packml_ros/interface/packml_interface.hpp"`):
+
+      class MyMotor : public PackmlNodeInterface {
+      public:
+        explicit MyMotor(rclcpp::Node::SharedPtr node) { init(node); }
+        packml_msgs::msg::NodeHealth get_health_status() override {
+          packml_msgs::msg::NodeHealth h;
+          if (over_temp_) { h.status = h.ERROR; h.action = h.HOLD; h.message = "over-temp"; }
+          else            { h.status = h.HEALTHY; h.action = h.NONE; }
+          return h;
+        }
+        void on_estop() {  // urgent: publish immediately, don't wait for the timer
+          packml_msgs::msg::NodeHealth h; h.status = h.ERROR; h.action = h.ABORT;
+          post_event(h);
+        }
+      };
+
+**Python** (`from packml_ros_py.packml_node import PackmlNode`):
+
+      class MyMotor(PackmlNode):
+          def get_health_status(self):
+              msg = NodeHealth()
+              if self.over_temp:
+                  msg.status, msg.action, msg.message = msg.ERROR, msg.HOLD, "over-temp"
+              else:
+                  msg.status, msg.action = msg.HEALTHY, msg.NONE
+              return msg
+
+The base class publishes the heartbeat for you (`heartbeat_interval_ms`, default
+`1000`). Use `post_event(health)` for safety-critical events that can't wait for the
+next tick. **Keep `get_health_status()` a pure getter** — no side effects at all: don't
+call `post_event()`, don't call `set_heartbeat_active()`, don't mutate node state from
+inside it. The periodic timer checks whether heartbeats are paused *before* calling
+`get_health_status()`, so a state-mutating getter can silently make its own follow-up
+logic unreachable.
+
+## Acting-state completion (optional)
+
+By default, an Equipment Module completes every commanded acting state (RESETTING, STARTING, …)
+the instant it accepts the transition — matching PackML's classic unconditional-timer behavior.
+A node that does real, non-instant work for a given state (homing an axis, running a self-test)
+can instead defer completion and report it once that work has genuinely finished:
+
+**C++:**
+
+      class MyMotor : public PackmlNodeInterface {
+      protected:
+        bool defers_completion(packml_sm::State state) override {
+          return state == packml_sm::State::RESETTING;
+        }
+        bool on_state_trans_req(packml_sm::State state) override {
+          if (state == packml_sm::State::RESETTING) {
+            std::thread([this]() {
+                home_axis();  // real, possibly slow work
+                report_state_complete(packml_sm::State::RESETTING, true);
+              }).detach();
+          }
+          return true;
+        }
+      };
+
+**Python:**
+
+      class MyMotor(PackmlNode):
+          def defers_completion(self, state):
+              return state == State.RESETTING
+
+          def on_state_transition_request(self, state):
+              if state == State.RESETTING:
+                  threading.Thread(target=self._home_axis, daemon=True).start()
+              return True
+
+          def _home_axis(self):
+              ...  # real, possibly slow work
+              self.report_state_complete(State.RESETTING, True)
+
+The manager fans the transition out to every node in `node_names` as a
+`~/packml_state_transition` **action** (not a plain service) and blocks the acting state on the
+Qt state-machine's own worker thread — never the ROS executor — until every node's result comes
+back, one fails, a required node goes unhealthy mid-wait, or `state_complete_timeout_ms` (default
+`30000`) elapses, in which case the machine routes to `ABORTING` and cancels every other
+still-outstanding node's goal for that round. `report_state_complete(state, success, error_code=0,
+message="")` takes an explicit success/failure so a node's own detected failure aborts the wait
+fast rather than riding out the timeout. `deferred_completion_timeout_ms` (default `30000`) is a
+per-node safety net: if a node overrides `defers_completion()` but forgets to call
+`report_state_complete()`, its own goal times out on its own rather than hanging forever. A node
+that never overrides `defers_completion()` — the default, and every existing Equipment Module —
+costs nothing: it behaves exactly as before.
+
+## Error catalog
+
+Turns a bare `NodeHealth.error_code` integer into a symbolic name, a
+human-readable (optionally multi-language) description, and a
+globally-unique fault number safe to show on an HMI or fault sheet. It's an
+optional layer on top of the health/heartbeat mechanism above — see
+[ERROR_CATALOG.md](ERROR_CATALOG.md) for how to add it to your own node and
+bringup packages.
 
 ## Contributors
 * Dejanira Araiza Illan

@@ -24,7 +24,7 @@
 #include <thread>
 #include <sstream>
 #include "packml_ros/interface/packml_interface.hpp"
-#include "packml_ros/modes_config.hpp"
+#include "packml_sm/modes_config.hpp"
 #include "packml_sm/common.hpp"
 #include "packml_sm/state_machine.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -165,62 +165,39 @@ public:
     //   std::cout << "Error setting parameter!";
     // }
 
-    // Create SM and connect to Qt components
-    // Execute method runs forever until stopped
-    // sm = packml_sm::StateMachine::continuousCycleSM();
-    // current_mode = packml_sm::ModeType::MANUAL;
-    sm = packml_sm::StateMachine::singleCycleSM();  // Execute method runs once
+    // Create continuous-cycle SM (runs EXECUTE in a loop until STOP).
+    sm = packml_sm::StateMachine::continuousCycleSM();
 
     sm->on_state_changed = [this](packml_sm::State value, QString name) {
-      this->changed_prom_ = std::promise<bool>();
-       this->changed_prom_.set_value(true);
-
       RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), "State changed to: " << name.toStdString() << "(" << value << ")");
 
-      auto handle_value = [](std::string client, packml_msgs::srv::StateTransition::Response::SharedPtr value) {
-        if (value->success)
-        {
-          RCLCPP_INFO_STREAM(rclcpp::get_logger("packml_ros"), client << " switched to new state");
-          return true;
-        }
+      // The state machine already changed state and IS the source of truth, so the
+      // manager's view and the latched status update immediately and unconditionally.
+      // Blocking the Qt thread here to wait for every Equipment Module to acknowledge
+      // would, on any failure, skip the update entirely — leaving current_state stale
+      // and the status topic silent about a transition that has already happened.
+      current_state.store(value);
 
-        RCLCPP_WARN_STREAM(rclcpp::get_logger("packml_ros"), client << " did not switch state! Error: " << value->message);
-        return false;
-      };
-
-      auto request = std::make_shared<packml_msgs::srv::StateTransition::Request>();
-      // TODO: create mapping
-      request->state.set__val((int)value);
-
-      auto futures =
-          call_all_clients<packml_msgs::srv::StateTransition>(PackmlManagerInterface::get_state_client, request);
-
-      auto succes = wait_all_futures<packml_msgs::srv::StateTransition>(futures, handle_value);
-
-      RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "Done waiting all features");
-
-      if (!succes)
-      {
-        // res->success = false;
-        // res->error_code = 1;
-        // res->message = "Error in one of the packml clients";
-        RCLCPP_WARN(rclcpp::get_logger("packml_ros"), "unsuccessfull!");
+      // When the machine returns to STOPPED (e.g. operator CLEAR), re-arm the health
+      // timeout check so still-silent required Equipment Modules immediately trigger
+      // ABORT again instead of leaving the machine stuck.
+      if (value == packml_sm::State::STOPPED) {
+        rearm_health_timeouts();
       }
-      else
-      {
-        // Set current state
-        // TODO: we shouldn't have to set current_state here. Maybe do something with returning true/false on this function
-        current_state = value;
 
-        // Publish new state
-        publish_status();
+      // Notify the Equipment Modules without blocking this (Qt) thread; missing,
+      // rejected, or failed-to-complete acknowledgements are surfaced as WARN logs/alarms
+      // by the fan-out, and feed completion_tracker_ so the setStateOperation-bound
+      // function waiting on this state's real completion (see init()) can resolve. Fan out
+      // BEFORE publishing status: an EM that saw the new state on the latched status topic
+      // first would answer the transition request with the "already there" shortcut and
+      // skip its on_state_trans_req() hook. Initiating the requests first preserves the
+      // request-then-status order in the common case (delivery order across an action and
+      // a topic is not strictly guaranteed, so EM hooks should not depend on it — react to
+      // on_status_changed for authoritative state).
+      fanout_state_transition(value);
 
-        RCLCPP_INFO(rclcpp::get_logger("packml_ros"), "Done publishing!");
-
-        // Send service response
-        // res->success = true;
-        // res->error_code = res->SUCCESS;
-      }
+      publish_status();
     };
 
     init(node, sm);
@@ -228,31 +205,60 @@ public:
     // Initial mode is configurable via the 'initial_mode' parameter (int).
     // Default is 0 (Invalid/undefined). Users should set this to the desired
     // starting mode value defined in their modes YAML file.
-    node->declare_parameter("initial_mode", 0);
-    auto initial_mode = static_cast<packml_sm::ModeType>(node->get_parameter("initial_mode").as_int());
+    node->declare_parameter(packml_ros::kParamInitialMode, 0);
+    auto initial_mode = static_cast<packml_sm::ModeType>(node->get_parameter(packml_ros::kParamInitialMode).as_int());
 
-    // Optional: load per-mode state masks from a YAML configuration file.
-    // The 'modes_config_file' parameter should be set to the path of the
-    // modes YAML file (the same file used for mode constants generation).
-    // States not listed in the mask for a mode default to true (available).
-    node->declare_parameter("modes_config_file", std::string(""));
-    auto modes_config_path = node->get_parameter("modes_config_file").as_string();
-
-    if (!modes_config_path.empty()) {
-      auto state_masks = packml_ros::parse_modes_config(modes_config_path);
-      auto it = state_masks.find(initial_mode);
-      if (it != state_masks.end()) {
+    // 'modes_config_file' is declared and parsed by PackmlManagerInterface::init() (called
+    // above), which owns the resulting table. Declaring it a second time here would throw
+    // "already been declared".
+    //
+    // Uses that same kept table (mode_masks_) rather than parsing a second copy here: a copy
+    // parsed and then discarded leaves ~/changeMode with nothing to apply, so the first runtime
+    // mode change wipes the configured mask. One table, one owner, consulted identically by this
+    // boot call and by ~/changeMode.
+    {
+      auto it = mode_masks_.find(initial_mode);
+      if (it != mode_masks_.end()) {
         sm->changeMode(initial_mode, it->second);
       } else {
         sm->changeMode(initial_mode);
       }
-    } else {
-      sm->changeMode(initial_mode);
     }
 
-    // // Needs to be calibrated with the time of the PLC
-    // sm->setExecute(std::bind(myExecuteMethod));
-    sm->activate();
+    // EXECUTE holds until something commands the machine out of it. Bound explicitly, rather than
+    // left to the library's hold-when-unbound behaviour, because the two are indistinguishable at
+    // runtime and only one of them is a decision: this manager coordinates equipment modules, it
+    // does not run the machine's own production logic, so ending a batch is an external event
+    // (the orchestrator's Stop today; the standard's Complete command once that exists) and never
+    // a timer expiring here. The commented-out binding this replaces was
+    // `setExecute(std::bind(myExecuteMethod))`, calibrated "with the time of the PLC" -- a
+    // deployment that genuinely has per-cycle production logic to run should bind it here and get
+    // a real EXECUTE --SC--> boundary, not resurrect that stub, which returned immediately.
+    sm->setInterruptibleStateOperation(packml_sm::State::EXECUTE,
+      [](std::stop_token stop_token) -> int {
+        while (!stop_token.stop_requested()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        return 0;
+      });
+
+    // A manager whose state machine did not start is worse than one that is absent: init() above
+    // has already advertised every service and created the status publisher, so the node passes
+    // every liveness check an operator or a launch file can make, while never entering a state,
+    // never publishing one, and refusing every command. Refuse to exist instead, and let the
+    // supervisor restart or report it.
+    if (!sm->activate()) {
+      const auto faults = sm->errorEscapeReport();
+      for (const auto & fault : faults) {
+        RCLCPP_FATAL_STREAM(rclcpp::get_logger("packml_ros"),
+          "State machine graph is unsafe to run: " << fault);
+      }
+      throw std::runtime_error(
+        faults.empty()
+          ? "packml state machine failed to activate (no QCoreApplication on this process?)"
+          : "packml state machine failed to activate: its graph has acting states whose failure "
+            "has nowhere to go");
+    }
 
     printf("SM created\n");
 
@@ -487,9 +493,16 @@ public:
   }
 
   /**
-   * @brief The class constructor
+   * @brief The class destructor
    */
-  virtual ~SMNode_new() {}
+  virtual ~SMNode_new()
+  {
+    // MUST run first, before any member (in particular `sm`) starts unwinding: this
+    // wakes any in-flight CompletionTracker wait so StateMachine::drainActingStates()
+    // (invoked from ~StateMachine(), which has no internal timeout) doesn't stall
+    // teardown for up to state_complete_timeout_ms. See PackmlManagerInterface::shutdown().
+    shutdown();
+  }
 
   // /**
   // * @brief Function to bind to the Execute state for the state machine, waiting for a set amount
@@ -516,7 +529,7 @@ public:
 /**
  * @brief Function to be run in a thread to execute a QT object for a state machine
  */
-void qtWorker(int argc, char* argv[])
+inline void qtWorker(int argc, char* argv[])
 {
   QCoreApplication a(argc, argv);
   a.exec();
