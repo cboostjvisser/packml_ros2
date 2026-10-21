@@ -211,6 +211,9 @@ public:
   */
   virtual bool abort();
 
+  /// End the current batch from EXECUTE, HELD or SUSPENDED.
+  virtual bool complete();
+
 protected:
   /**
   * @brief Function that binds a QT event to the function for the state start
@@ -263,6 +266,9 @@ protected:
   * @brief Function that binds a QT action to the function for the state abort
   */
   virtual bool _abort() = 0;
+
+  // Default refusal preserves source compatibility for external interface implementations.
+  virtual bool _complete() { return false; }
 };
 
 
@@ -291,7 +297,8 @@ public:
 
 
   /**
-  * @brief Function to create a continuous cycle state machine (executes forever until stopped)
+  * @brief Create a machine whose unbound Execute holds until commanded out.
+  *        A bound Execute operation owns the batch lifetime; successful return completes it.
   * @param delay_ms Default delay for acting states (ms). Lower values speed
   *        up tests.  Production default: 200.
   */
@@ -545,6 +552,8 @@ protected:
   * @brief Function that binds a QT action to the function for the state abort
   */
   virtual bool _abort();
+
+  virtual bool _complete();
 
 
   /**

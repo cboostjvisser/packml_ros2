@@ -124,3 +124,59 @@ TEST_F(ManagerStateTransitionTest, MultiStepTransitionWorks)
   ASSERT_NE(resp, nullptr);
   EXPECT_TRUE(resp->success) << "STOP failed: " << resp->message;
 }
+
+
+// Exercise the wire command and manager fanout from every new 2022 source state.
+TEST_F(ManagerStateTransitionTest, CompleteFromExecuteHeldAndSuspended)
+{
+  using State = packml_sm::State;
+  for (const auto source : {State::EXECUTE, State::HELD, State::SUSPENDED}) {
+    auto response = send_command(Req::RESET);
+    ASSERT_NE(response, nullptr);
+    ASSERT_TRUE(response->success) << response->message;
+    ASSERT_TRUE(packml_ros_test::wait_for_state(sm_node_, State::IDLE, 2s));
+    response = send_command(Req::START);
+    ASSERT_NE(response, nullptr);
+    ASSERT_TRUE(response->success) << response->message;
+    ASSERT_TRUE(packml_ros_test::wait_for_state(sm_node_, State::EXECUTE, 2s));
+    if (source != State::EXECUTE) {
+      response = send_command(source == State::HELD ? Req::HOLD : Req::SUSPEND);
+      ASSERT_NE(response, nullptr);
+      ASSERT_TRUE(response->success) << response->message;
+      ASSERT_TRUE(packml_ros_test::wait_for_state(sm_node_, source, 2s));
+    }
+    response = send_command(Req::COMPLETE);
+    ASSERT_NE(response, nullptr);
+    ASSERT_TRUE(response->success) << response->message;
+    ASSERT_TRUE(packml_ros_test::wait_for_state(sm_node_, State::COMPLETED, 2s));
+  }
+}
+
+TEST_F(ManagerStateTransitionTest, CompleteIsRecognizedButRejectedFromStopped)
+{
+  auto response = send_command(Req::COMPLETE);
+  ASSERT_NE(response, nullptr);
+  EXPECT_FALSE(response->success);
+  EXPECT_EQ(response->error_code, Resp::INVALID_TRANSITION_REQUEST);
+}
+
+TEST_F(ManagerStateTransitionTest, HoldFromSuspended)
+{
+  using State = packml_sm::State;
+  auto response = send_command(Req::RESET);
+  ASSERT_NE(response, nullptr);
+  ASSERT_TRUE(response->success);
+  ASSERT_TRUE(packml_ros_test::wait_for_state(sm_node_, State::IDLE, 2s));
+  response = send_command(Req::START);
+  ASSERT_NE(response, nullptr);
+  ASSERT_TRUE(response->success);
+  ASSERT_TRUE(packml_ros_test::wait_for_state(sm_node_, State::EXECUTE, 2s));
+  response = send_command(Req::SUSPEND);
+  ASSERT_NE(response, nullptr);
+  ASSERT_TRUE(response->success);
+  ASSERT_TRUE(packml_ros_test::wait_for_state(sm_node_, State::SUSPENDED, 2s));
+  response = send_command(Req::HOLD);
+  ASSERT_NE(response, nullptr);
+  ASSERT_TRUE(response->success);
+  EXPECT_TRUE(packml_ros_test::wait_for_state(sm_node_, State::HELD, 2s));
+}

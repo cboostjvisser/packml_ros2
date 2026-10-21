@@ -48,6 +48,10 @@
 
 namespace packml_sm {
 
+bool StateMachineInterface::complete() {
+  return _complete();
+}
+
 bool StateMachineInterface::start() {
   return _start();
   // return true;
@@ -675,6 +679,9 @@ std::expected<bool, std::string> StateMachine::changeState(TransitionCmd command
     case TransitionCmd::UNSUSPEND:
       command_rtn = unsuspend();
       break;
+    case TransitionCmd::COMPLETE:
+      command_rtn = complete();
+      break;
     default:
       command_valid = false;
       break;
@@ -860,6 +867,7 @@ bool StateMachine::_suspend()   { return postCommand(TransitionCmd::SUSPEND); }
 bool StateMachine::_unsuspend() { return postCommand(TransitionCmd::UNSUSPEND); }
 bool StateMachine::_stop()      { return postCommand(TransitionCmd::STOP); }
 bool StateMachine::_abort()     { return postCommand(TransitionCmd::ABORT); }
+bool StateMachine::_complete()  { return postCommand(TransitionCmd::COMPLETE); }
 
 ContinuousCycle::ContinuousCycle() {
   printf("Forming CONTINUOUS CYCLE state machine (states + transitions)\n");
@@ -926,33 +934,11 @@ void ContinuousCycle::init(int delay_ms){
   // PackML mandates power-on into STOPPED (inside abortable group).
   sm_internal_.setInitialState(gen->states[to_string(SuperState::ABORTABLE)]);
 
-  // Test to see if we can adjust the state machines transitions
-  auto list = gen->states[to_string(State::EXECUTE)]->transitions();
-  for (const auto& item : list)
-  {
-    if (item->targetState() == gen->states[to_string(State::COMPLETING)])
-    {
-      PACKML_INFO_STREAM("packml_sm", "Found transition!");
-      gen->states[to_string(State::EXECUTE)]->removeTransition(item);
-      PACKML_INFO_STREAM("packml_sm", "Removed transition!");
-      auto trans = gen->generate_transition(gen->states[to_string(State::EXECUTE)], StatesGenerator::TransitionType::STATE_COMPLETED);
-      gen->states[to_string(State::EXECUTE)]->addTransition(trans);
-      PACKML_INFO_STREAM("packml_sm", "Added transition to self!");
-    }
-  }
-
-  // ContinuousCycle EXECUTE holds when nothing is bound to it -- it does NOT complete on a timer.
-  //
-  // Binding a placeholder like "sleep(delay_ms); return 0" so the demo does something completes a
-  // production cycle several times a second on a machine that has produced nothing, and because
-  // the transition above sends every one of those completions straight back into EXECUTE, a
-  // manager sitting in its normal production state then fans a full state-transition goal out to
-  // every equipment module at that rate forever. The duration is not the problem: a real bound
-  // execute of the same length does the same thing. Completing EXECUTE is the end of production --
-  // the standard leaves it when the product
-  // counter reaches its limit or on an explicit Complete command -- so a machine with nothing
-  // bound has nothing to complete, and should sit still and say so (see activate(), which names
-  // the omission) rather than fabricate cycles.
+  // Keep the standard EXECUTE --SC--> COMPLETING edge. A bound Execute owns the lifetime of
+  // the batch, so returning success ends production once, without re-entering Execute. An
+  // external orchestrator can instead bind an interruptible hold and end the batch with Complete.
+  // With nothing bound, Execute has no work to complete, so it holds until commanded out instead
+  // of completing on a timer, and activate() reports the unbound state (see holdWhenUnbound()).
   ((ActingState*) gen->states[to_string(State::EXECUTE)])->holdWhenUnbound();
 
   printf("State machine formed\n");

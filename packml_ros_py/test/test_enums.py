@@ -38,11 +38,12 @@ class TestStateEnum:
         assert int(State.UNSUSPENDING) == 14
         assert int(State.RESETTING) == 15
         assert int(State.COMPLETING) == 16
-        assert int(State.COMPLETE) == 17
+        assert int(State.COMPLETED) == 17
+        assert State.COMPLETE == State.COMPLETED
 
     def test_state_count(self):
         """All 18 PackML states must be represented."""
-        assert len(State.__members__) == 18
+        assert len({int(state) for state in State.__members__.values()}) == 18
 
     def test_state_names(self):
         assert State(6).name == 'EXECUTE'
@@ -66,6 +67,7 @@ class TestTransitionCmdEnum:
         assert int(TransitionCmd.UNSUSPEND) == 7
         assert int(TransitionCmd.ABORT) == 8
         assert int(TransitionCmd.CLEAR) == 9
+        assert int(TransitionCmd.COMPLETE) == 10
 
     def test_cmd_count(self):
-        assert len(TransitionCmd.__members__) == 10
+        assert len(TransitionCmd.__members__) == 11

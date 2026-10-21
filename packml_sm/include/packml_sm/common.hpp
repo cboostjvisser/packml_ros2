@@ -89,7 +89,8 @@ enum class State
   UNSUSPENDING = 14,
   RESETTING    = 15,
   COMPLETING   = 16,
-  COMPLETE     = 17,
+  COMPLETED    = 17,
+  COMPLETE     = COMPLETED,  // Compatibility with pre-2022 clients.
 };
 
 inline std::string to_string(const State& state)
@@ -113,7 +114,7 @@ inline std::string to_string(const State& state)
     case State::UNSUSPENDING: return "UNSUSPENDING";
     case State::RESETTING:  return "RESETTING";
     case State::COMPLETING: return "COMPLETING";
-    case State::COMPLETE:   return "COMPLETE";
+    case State::COMPLETED:  return "COMPLETED";
   };
   return std::to_string(static_cast<typename std::underlying_type<State>::type>(state));
 }
@@ -131,7 +132,7 @@ using AvailableStates = std::map<State, bool>;
 ///
 /// STOPPED, IDLE, EXECUTE and ABORTED are mandatory outright. Three pairs are conditionally
 /// mandatory: enabling HOLDING or UNHOLDING makes HELD mandatory, SUSPENDING or UNSUSPENDING
-/// makes SUSPENDED mandatory, and COMPLETING makes COMPLETE mandatory -- an acting state whose
+/// makes SUSPENDED mandatory, and COMPLETING makes COMPLETED mandatory -- an acting state whose
 /// paired wait state is unavailable has a transition with nowhere to land.
 ///
 /// ABORTING is treated as mandatory here for a different reason: this mask gates which states a
@@ -173,7 +174,7 @@ inline std::vector<std::string> enforce_mandatory_states(AvailableStates & avail
     require(State::SUSPENDED);
   }
   if (enabled(State::COMPLETING)) {
-    require(State::COMPLETE);
+    require(State::COMPLETED);
   }
   return restored;
 }
@@ -231,7 +232,7 @@ std::string to_string(T mode) {
   return std::to_string(static_cast<int>(mode));
 }
 
-// Aligned with Transition.srv
+// Aligned with StateChange.srv (ISA-TR88.00.02-2022).
 enum class TransitionCmd
 {
   NO_COMMAND  = 0,
@@ -243,7 +244,8 @@ enum class TransitionCmd
   SUSPEND     = 6,
   UNSUSPEND   = 7,
   ABORT       = 8,
-  CLEAR       = 9
+  CLEAR       = 9,
+  COMPLETE    = 10
 };
 
 inline std::string to_string(const TransitionCmd& command)
@@ -260,6 +262,7 @@ inline std::string to_string(const TransitionCmd& command)
     case TransitionCmd::UNSUSPEND:  return "UNSUSPEND";
     case TransitionCmd::ABORT:      return "ABORT";
     case TransitionCmd::CLEAR:      return "CLEAR";
+    case TransitionCmd::COMPLETE:   return "COMPLETE";
   }
   return std::to_string(static_cast<typename std::underlying_type<TransitionCmd>::type>(command));
 }

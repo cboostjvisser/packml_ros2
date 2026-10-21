@@ -10,6 +10,25 @@ This package also contains an RViz 2 plugin to be able to visualize the state of
 
 Finally, the package contains an example of the interface of the RViz2 plugin with a real PackML state machine running in a PLC, communicating its state and triggering transitions via OPCUA public tags. 
 
+## PackML 2022 command support
+
+`StateChange.COMPLETE` (10) ends a run from EXECUTE, HELD, or SUSPENDED through
+COMPLETING to COMPLETED. Completion waits for the equipment modules' COMPLETING
+work. Hold is also accepted from SUSPENDED. The ROS service, Python enums, panel,
+and PLC command adapter expose these additions.
+
+COMPLETED remains state 17; `State.COMPLETE` is retained as a compatibility alias.
+Existing `AllStatus.complete_state` fields and PLC `Complete` node names remain
+unchanged. Continuous machines hold EXECUTE until commanded out; a bound execute
+operation that finishes successfully now follows the standard SC edge to COMPLETING.
+It must not return after each individual product.
+
+Health reports can request `NodeHealth.STOP` (wire value 5), which stops through
+STOPPING. Action priority is ABORT > STOP > HOLD > SUSPEND > WARN > NONE, independent
+of wire values. Existing values are unchanged. Rebuild message consumers when
+upgrading. The state transitions follow the
+[Siemens PackML V2022 reference](https://cache.industry.siemens.com/dl/files/198/109821198/att_1143917/v1/LPMLV2022_SIMATIC_V1_0_en.pdf).
+
 ## List of packages
 * `packml_plugin`: RViz2 plugin for PackML state machine standard template visualization and control
 * `packml_sm`: Simulator library in C++ ported to ROS 2 from the original PackML repository in ROS 1. Two types of state machines, with continuous Execute state and with timed Execute state.
@@ -116,7 +135,7 @@ A PackML **Manager** (Machine) can supervise the health of its **Equipment Modul
 carrying a `NodeHealth` (status + recommended PackML action). The manager embeds a
 `HealthMonitor` that:
 
-* **routes faults to the state machine** — a node reporting `HOLD`/`SUSPEND`/`ABORT`
+* **routes faults to the state machine** — a node reporting `HOLD`/`SUSPEND`/`STOP`/`ABORT`
   drives the corresponding PackML transition (only new/escalating events fire; `WARN`
   is observed but never transitions);
 * **detects dead nodes** — a required node that stops sending heartbeats times out

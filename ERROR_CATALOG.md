@@ -24,7 +24,7 @@ in your node's package:
       OVER_TEMPERATURE: 302
     descriptions:                # not compiled in — editing text needs re-aggregating
       OVERCURRENT:
-        action: ABORT            # NONE | WARN | HOLD | SUSPEND | ABORT
+        action: ABORT            # NONE | WARN | HOLD | SUSPEND | STOP | ABORT
         severity: CRITICAL       # CRITICAL | ERROR | WARNING | INFO
         category: electrical     # electrical | mechanical | thermal | sensor |
                                   # pneumatic | hydraulic | software |

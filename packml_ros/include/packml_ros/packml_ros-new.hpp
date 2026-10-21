@@ -229,7 +229,7 @@ public:
     // left to the library's hold-when-unbound behaviour, because the two are indistinguishable at
     // runtime and only one of them is a decision: this manager coordinates equipment modules, it
     // does not run the machine's own production logic, so ending a batch is an external event
-    // (the orchestrator's Stop today; the standard's Complete command once that exists) and never
+    // (the standard's Complete command, or Stop for an interrupted run) and never
     // a timer expiring here. The commented-out binding this replaces was
     // `setExecute(std::bind(myExecuteMethod))`, calibrated "with the time of the PLC" -- a
     // deployment that genuinely has per-cycle production logic to run should bind it here and get

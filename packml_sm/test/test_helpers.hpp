@@ -17,6 +17,9 @@
 #define PACKML_SM__TEST__TEST_HELPERS_HPP_
 
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <stop_token>
 #include <memory>
 #include <thread>
 
@@ -66,6 +69,17 @@ inline bool wait_for_state(
 inline int execute_success_long()
 {
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  return 0;
+}
+
+// Hold a batch until a command or teardown interrupts Execute. Returning success without an
+// interruption means the batch is finished, for both single- and continuous-cycle machines.
+inline int execute_hold(std::stop_token token)
+{
+  std::mutex mutex;
+  std::condition_variable_any cv;
+  std::unique_lock<std::mutex> lock(mutex);
+  cv.wait(lock, token, [] { return false; });
   return 0;
 }
 

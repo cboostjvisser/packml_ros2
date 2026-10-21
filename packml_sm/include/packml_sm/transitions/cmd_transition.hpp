@@ -174,6 +174,16 @@ public:
     return new CmdTransition(TransitionCmd::UNSUSPEND, to_string(TransitionCmd::UNSUSPEND).c_str());
   }
 
+  /** End production from Execute, Held or Suspended. */
+  static CmdTransition * complete(PackmlState & from, PackmlState & to)
+  {
+    return new CmdTransition(TransitionCmd::COMPLETE, "complete", from, to);
+  }
+  static CmdTransition * complete()
+  {
+    return new CmdTransition(TransitionCmd::COMPLETE, to_string(TransitionCmd::COMPLETE).c_str());
+  }
+
   /**
   * @brief Function to define a transition from a triggering event
   * @param cmd_value - number of the new requested state

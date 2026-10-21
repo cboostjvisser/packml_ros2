@@ -47,6 +47,7 @@ PYBIND11_MODULE(_packml_bindings, m)
     .value("UNSUSPENDING", packml_sm::State::UNSUSPENDING)
     .value("RESETTING", packml_sm::State::RESETTING)
     .value("COMPLETING", packml_sm::State::COMPLETING)
+    .value("COMPLETED", packml_sm::State::COMPLETED)
     .value("COMPLETE", packml_sm::State::COMPLETE);
 
   py::enum_<packml_sm::TransitionCmd>(m, "TransitionCmd")
@@ -59,7 +60,8 @@ PYBIND11_MODULE(_packml_bindings, m)
     .value("SUSPEND", packml_sm::TransitionCmd::SUSPEND)
     .value("UNSUSPEND", packml_sm::TransitionCmd::UNSUSPEND)
     .value("ABORT", packml_sm::TransitionCmd::ABORT)
-    .value("CLEAR", packml_sm::TransitionCmd::CLEAR);
+    .value("CLEAR", packml_sm::TransitionCmd::CLEAR)
+    .value("COMPLETE", packml_sm::TransitionCmd::COMPLETE);
 
   // --- TransitionResult ---
 

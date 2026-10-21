@@ -267,6 +267,9 @@ public:
           case packml_msgs::srv::StateChange::Request::UNSUSPEND:
             command_rtn = sm->unsuspend();
             break;
+          case packml_msgs::srv::StateChange::Request::COMPLETE:
+            command_rtn = sm->complete();
+            break;
           default:
             command_valid = false;
             break;

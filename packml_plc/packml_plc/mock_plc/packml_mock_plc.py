@@ -40,7 +40,7 @@ STATE_NUMBERS = {
 # PackML command names
 PACKML_COMMANDS = [
     'Cmd_Reset', 'Cmd_Start', 'Cmd_Stop', 'Cmd_Hold', 'Cmd_Unhold',
-    'Cmd_Suspend', 'Cmd_Unsuspend', 'Cmd_Abort', 'Cmd_Clear'
+    'Cmd_Suspend', 'Cmd_Unsuspend', 'Cmd_Abort', 'Cmd_Clear', 'Cmd_Complete'
 ]
 
 # Acting states: must complete via SC signal or timeout
@@ -194,6 +194,7 @@ class PackMLMockPLC:
             'Cmd_Unsuspend': ('Unsuspending', 'Execute'),
             'Cmd_Abort':     ('Aborting', 'Aborted'),
             'Cmd_Clear':     ('Clearing', 'Stopped'),
+            'Cmd_Complete':  ('Completing', 'Complete'),
         }
 
         # Acting state -> final state (when SC or timeout)
@@ -216,15 +217,15 @@ class PackMLMockPLC:
             'Stopped': ['Cmd_Reset', 'Cmd_Abort'],
             'Idle': ['Cmd_Start', 'Cmd_Stop', 'Cmd_Abort'],
             'Starting': ['Cmd_Stop', 'Cmd_Abort'],
-            'Execute': ['Cmd_Hold', 'Cmd_Suspend', 'Cmd_Stop', 'Cmd_Abort'],
+            'Execute': ['Cmd_Hold', 'Cmd_Suspend', 'Cmd_Stop', 'Cmd_Abort', 'Cmd_Complete'],
             'Completing': ['Cmd_Stop', 'Cmd_Abort'],
             'Complete': ['Cmd_Reset', 'Cmd_Stop', 'Cmd_Abort'],
             'Resetting': ['Cmd_Stop', 'Cmd_Abort'],
             'Holding': ['Cmd_Stop', 'Cmd_Abort'],
-            'Held': ['Cmd_Unhold', 'Cmd_Stop', 'Cmd_Abort'],
+            'Held': ['Cmd_Unhold', 'Cmd_Stop', 'Cmd_Abort', 'Cmd_Complete'],
             'Unholding': ['Cmd_Stop', 'Cmd_Abort'],
             'Suspending': ['Cmd_Stop', 'Cmd_Abort'],
-            'Suspended': ['Cmd_Unsuspend', 'Cmd_Stop', 'Cmd_Abort'],
+            'Suspended': ['Cmd_Unsuspend', 'Cmd_Hold', 'Cmd_Stop', 'Cmd_Abort', 'Cmd_Complete'],
             'Unsuspending': ['Cmd_Stop', 'Cmd_Abort'],
             'Stopping': ['Cmd_Abort'],
             'Aborting': [],

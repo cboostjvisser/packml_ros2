@@ -199,6 +199,7 @@ PackmlWidget::PackmlWidget(QWidget * parent)
   connect(ui_->unhold_button, &QPushButton::clicked, this, &PackmlWidget::onUnholdButton);
   connect(ui_->suspend_button, &QPushButton::clicked, this, &PackmlWidget::onSuspendButton);
   connect(ui_->stop_button, &QPushButton::clicked, this, &PackmlWidget::onStopButton);
+  connect(ui_->complete_button, &QPushButton::clicked, this, &PackmlWidget::onCompleteButton);
 
   // Start ROS2 spinning in a background thread
   ros_spin_thread_ = std::thread([this]() {
@@ -333,6 +334,8 @@ void PackmlWidget::onUnholdButton()     { sendTransitionCommand(packml_msgs::srv
 void PackmlWidget::onSuspendButton()    { sendTransitionCommand(packml_msgs::srv::StateChange::Request::SUSPEND); }
 void PackmlWidget::onStopButton()       { sendTransitionCommand(packml_msgs::srv::StateChange::Request::STOP); }
 
+void PackmlWidget::onCompleteButton()  { sendTransitionCommand(packml_msgs::srv::StateChange::Request::COMPLETE); }
+
 void PackmlWidget::updateButtonState(std::shared_ptr<packml_msgs::srv::AllStatus::Response> msg)
 {
   // Only update button enabled state if it actually needs to change
@@ -398,6 +401,7 @@ void PackmlWidget::updateButtonState(std::shared_ptr<packml_msgs::srv::AllStatus
     ui_->starting_state->setStyleSheet("QLabel { color : black; }");
   }
   if (msg->execute_state == true) {
+    setEnabledIfNeeded(ui_->complete_button, true);
     ui_->execute_state->setStyleSheet("QLabel { color : red; }");
     setEnabledIfNeeded(ui_->stop_button, true);
     setEnabledIfNeeded(ui_->abort_button, true);
@@ -422,6 +426,8 @@ void PackmlWidget::updateButtonState(std::shared_ptr<packml_msgs::srv::AllStatus
     ui_->complete_state->setStyleSheet("QLabel { color : black; }");
   }
   if (msg->suspended_state == true) {
+    setEnabledIfNeeded(ui_->complete_button, true);
+    setEnabledIfNeeded(ui_->hold_button, true);
     ui_->suspended_state->setStyleSheet("QLabel { color : red; }");
     setEnabledIfNeeded(ui_->stop_button, true);
     setEnabledIfNeeded(ui_->abort_button, true);
@@ -448,6 +454,7 @@ void PackmlWidget::updateButtonState(std::shared_ptr<packml_msgs::srv::AllStatus
     ui_->holding_state->setStyleSheet("QLabel { color : black; }");
   }
   if (msg->held_state == true) {
+    setEnabledIfNeeded(ui_->complete_button, true);
     ui_->held_state->setStyleSheet("QLabel { color : red; }");
     setEnabledIfNeeded(ui_->stop_button, true);
     setEnabledIfNeeded(ui_->abort_button, true);
@@ -499,6 +506,7 @@ void PackmlWidget::updateButtonState(std::shared_ptr<packml_msgs::srv::AllStatus
 
 void PackmlWidget::disableAllButtons()
 {
+  ui_->complete_button->setEnabled(false);
   ui_->abort_button->setEnabled(false);
   ui_->clear_button->setEnabled(false);
   ui_->hold_button->setEnabled(false);
@@ -535,7 +543,7 @@ void PackmlWidget::callbackTime(std::shared_ptr<packml_msgs::srv::AllStatus::Res
   std::stringstream stream5;
   stream5 << std::fixed << std::setprecision(2) << msg->t_complete_state;
   std::string str_complete = stream5.str();
-  ui_->complete_state->setText(QString::fromStdString("Complete: " + str_complete + "s"));
+  ui_->complete_state->setText(QString::fromStdString("Completed: " + str_complete + "s"));
   std::stringstream stream6;
   stream6 << std::fixed << std::setprecision(2) << msg->t_suspended_state;
   std::string str_suspended = stream6.str();

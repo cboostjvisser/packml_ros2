@@ -150,6 +150,7 @@ if(BUILD_TESTING)
   ament_add_gtest(${PROJECT_NAME}_tests
     test/test_main.cpp
     test/test_lifecycle.cpp
+    test/test_packml_2022.cpp
     test/test_state_transitions.cpp
     test/test_commands.cpp
     test/test_modes.cpp

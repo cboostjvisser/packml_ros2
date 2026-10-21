@@ -140,6 +140,7 @@ int32_t action_from_string(const std::string & action_name)
   if (action_name == "HOLD") {return NodeHealth::HOLD;}
   if (action_name == "SUSPEND") {return NodeHealth::SUSPEND;}
   if (action_name == "ABORT") {return NodeHealth::ABORT;}
+  if (action_name == "STOP") {return NodeHealth::STOP;}
   return NodeHealth::NONE;
 }
 
@@ -150,7 +151,7 @@ namespace {
 bool is_known_action_name(const std::string & name)
 {
   return name == "NONE" || name == "WARN" || name == "HOLD" ||
-         name == "SUSPEND" || name == "ABORT";
+         name == "SUSPEND" || name == "ABORT" || name == "STOP";
 }
 
 /// Mirrors aggregate_error_catalog.py's KNOWN_CATEGORIES — kept in sync by

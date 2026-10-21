@@ -102,7 +102,7 @@ DEFAULT_WINDOW = 1000
 RESERVED_BAND = range(1, 100)  # conventional 1-99 reserved band ('reserved-outside-band', W7)
 INT32_MAX = 2 ** 31 - 1
 KNOWN_SEVERITIES = ('CRITICAL', 'ERROR', 'WARNING', 'INFO')
-KNOWN_ACTIONS = ('NONE', 'WARN', 'HOLD', 'SUSPEND', 'ABORT')
+KNOWN_ACTIONS = ('NONE', 'WARN', 'HOLD', 'SUSPEND', 'ABORT', 'STOP')
 # Lowercase, matching every existing catalog's own convention for this field
 # (unlike severity/action, which are conventionally upper-case). Without a
 # controlled vocabulary, "electrical"/"Electrical"/"elec" are three different,

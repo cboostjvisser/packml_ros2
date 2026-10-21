@@ -478,6 +478,88 @@ TEST_F(HealthMonitorLogicTest, AfterClearNewHoldFiresAgain)
   EXPECT_EQ(action_calls_.size(), 2u) << "Second HOLD should fire again after clear";
 }
 
+// Exercise every known pair, including both non-numeric priority inversions:
+// SUSPEND(3) -> HOLD(2) and STOP(5) -> ABORT(4) must escalate.
+TEST_F(HealthMonitorLogicTest, AllActionTransitionsUseSemanticSeverity)
+{
+  const std::vector<int32_t> actions = {
+    NodeHealth::NONE, NodeHealth::WARN, NodeHealth::SUSPEND,
+    NodeHealth::HOLD, NodeHealth::STOP, NodeHealth::ABORT};
+  for (size_t previous = 0; previous < actions.size(); ++previous) {
+    for (size_t next = 0; next < actions.size(); ++next) {
+      SCOPED_TRACE("previous=" + std::to_string(actions[previous]) +
+        ", next=" + std::to_string(actions[next]));
+      std::vector<int32_t> fired;
+      HealthMonitor monitor([&fired](int32_t action) {fired.push_back(action);});
+      NodeHeartbeat hb;
+      hb.node_name = "motor";
+      hb.health.status = NodeHealth::ERROR;
+      hb.health.action = actions[previous];
+      monitor.on_heartbeat(hb);
+      fired.clear();
+      hb.health.action = actions[next];
+      monitor.on_heartbeat(hb);
+      if (next > previous && next > 1) {
+        ASSERT_EQ(fired.size(), 1u);
+        EXPECT_EQ(fired.front(), actions[next]);
+      } else {
+        EXPECT_TRUE(fired.empty());
+      }
+    }
+  }
+}
+
+TEST_F(HealthMonitorLogicTest, StopClearsAndRearmsWithoutChangingWireValues)
+{
+  EXPECT_EQ(NodeHealth::NONE, 0);
+  EXPECT_EQ(NodeHealth::WARN, 1);
+  EXPECT_EQ(NodeHealth::HOLD, 2);
+  EXPECT_EQ(NodeHealth::SUSPEND, 3);
+  EXPECT_EQ(NodeHealth::ABORT, 4);
+  EXPECT_EQ(NodeHealth::STOP, 5);
+
+  inject("motor", NodeHealth::ERROR, NodeHealth::STOP);
+  inject("motor", NodeHealth::ERROR, NodeHealth::STOP);
+  inject("motor", NodeHealth::HEALTHY, NodeHealth::NONE);
+  inject("motor", NodeHealth::ERROR, NodeHealth::STOP);
+  EXPECT_EQ(action_calls_, (std::vector<int32_t>{NodeHealth::STOP, NodeHealth::STOP}));
+}
+
+TEST(HealthMonitorStop, GateBlocksAndAlarmClearPreservesStopSeverity)
+{
+  std::vector<AlarmEvent> alarms;
+  HealthMonitor monitor(nullptr, 0, [&alarms](const AlarmEvent & alarm) {
+      alarms.push_back(alarm);
+    });
+  monitor.register_required_node("motor");
+  NodeHeartbeat hb;
+  hb.node_name = "motor";
+  hb.heartbeat_interval_ms = 1000;
+  hb.health.status = NodeHealth::ERROR;
+  hb.health.action = NodeHealth::STOP;
+  hb.health.error_code = 12;
+  hb.health.instance_id = "infeed";
+  monitor.on_heartbeat(hb);
+  EXPECT_FALSE(monitor.can_transition_from_stopped());
+  EXPECT_TRUE(monitor.can_transition_from_stopped(true));
+  EXPECT_NE(monitor.gate_block_summary().find("motor (unhealthy"), std::string::npos);
+  ASSERT_EQ(alarms.size(), 1u);
+  EXPECT_TRUE(alarms[0].trigger);
+  EXPECT_EQ(alarms[0].severity, NodeHealth::STOP);
+
+  hb.health.status = NodeHealth::HEALTHY;
+  hb.health.action = NodeHealth::NONE;
+  hb.health.error_code = 0;
+  hb.health.instance_id.clear();
+  monitor.on_heartbeat(hb);
+  EXPECT_TRUE(monitor.can_transition_from_stopped());
+  ASSERT_EQ(alarms.size(), 2u);
+  EXPECT_FALSE(alarms[1].trigger);
+  EXPECT_EQ(alarms[1].severity, NodeHealth::STOP);
+  EXPECT_EQ(alarms[1].error_code, 12);
+  EXPECT_EQ(alarms[1].instance_id, "infeed");
+}
+
 // ============================================================================
 // Heartbeat Timeout Logic
 // ============================================================================

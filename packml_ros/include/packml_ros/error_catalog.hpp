@@ -42,7 +42,7 @@ struct ErrorEntry
 {
   int32_t code{0};
   std::string name;        ///< symbolic name from error_codes: (e.g. "OVERCURRENT")
-  int32_t action{0};       ///< NodeHealth action constant (NONE..ABORT)
+  int32_t action{0};       ///< NodeHealth action identifier (not a severity rank)
   std::string severity;    ///< CRITICAL | ERROR | WARNING | INFO (documentation only)
   std::map<std::string, std::string> descriptions;  ///< locale tag → text
   // Appended after descriptions so existing positional ErrorEntry{…} initializers
@@ -60,7 +60,7 @@ struct ErrorEntry
 // Action name mapping
 // ---------------------------------------------------------------------------
 
-/// Map a PackML action name ("NONE","WARN","HOLD","SUSPEND","ABORT") to its
+/// Map a PackML action name ("NONE","WARN","HOLD","SUSPEND","ABORT","STOP") to its
 /// NodeHealth action integer.  Unknown names map to 0 (NONE).
 int32_t action_from_string(const std::string & action_name);
 

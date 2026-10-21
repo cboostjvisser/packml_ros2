@@ -87,12 +87,11 @@ TEST(Lifecycle, SingleCycleFollowsHappyPathToComplete)
   sm->deactivate();
 }
 
-// PackML continuous cycle: EXECUTE loops; only HOLD/SUSPEND/STOP/ABORT can
-// pull the machine out of EXECUTE.
+// A continuous batch explicitly holds Execute until commanded out.
 TEST(Lifecycle, ContinuousCycleStaysInExecuteUntilCommanded)
 {
   auto sm = packml_sm::StateMachine::continuousCycleSM(packml_sm_test::kTestDelayMs);
-  sm->setExecute(std::bind(execute_success_long));
+  sm->setInterruptibleStateOperation(State::EXECUTE, packml_sm_test::execute_hold);
   ASSERT_TRUE(sm->activate());
   ASSERT_TRUE(wait_for_state(*sm, State::STOPPED));
   ASSERT_TRUE(packml_sm_test::enable_all_transitions(*sm));

@@ -69,6 +69,11 @@ TEST(CommandMapping, ClearMapsCorrectly)
   EXPECT_EQ(to_transition_cmd(Req::CLEAR), packml_sm::TransitionCmd::CLEAR);
 }
 
+TEST(CommandMapping, CompleteMapsCorrectly)
+{
+  EXPECT_EQ(to_transition_cmd(Req::COMPLETE), packml_sm::TransitionCmd::COMPLETE);
+}
+
 TEST(CommandMapping, NoCommandMapsToNoCommand)
 {
   EXPECT_EQ(to_transition_cmd(Req::NO_COMMAND), packml_sm::TransitionCmd::NO_COMMAND);
@@ -76,8 +81,8 @@ TEST(CommandMapping, NoCommandMapsToNoCommand)
 
 TEST(CommandMapping, InvalidCommandMapsToNoCommand)
 {
-  // Any value outside 0-9 should map to NO_COMMAND
+  // Any value outside 0-10 should map to NO_COMMAND
   EXPECT_EQ(to_transition_cmd(99), packml_sm::TransitionCmd::NO_COMMAND);
   EXPECT_EQ(to_transition_cmd(-1), packml_sm::TransitionCmd::NO_COMMAND);
-  EXPECT_EQ(to_transition_cmd(10), packml_sm::TransitionCmd::NO_COMMAND);
+  EXPECT_EQ(to_transition_cmd(11), packml_sm::TransitionCmd::NO_COMMAND);
 }

@@ -4,11 +4,13 @@
 # is raised, updated, or cleared.  One message per event.  Self-contained: a
 # consumer needs no other message to interpret an alarm.
 
-# Severity scale — mirrors the PackML action levels (NodeHealth.action WARN..ABORT).
+# Severity identifiers mirror NodeHealth.action; numeric values are not severity ranks.
+# Reaction priority: ABORT > STOP > HOLD > SUSPEND > WARN.
 uint8 WARN=1
 uint8 HOLD=2
 uint8 SUSPEND=3
 uint8 ABORT=4
+uint8 STOP=5
 
 # True = alarm activated/updated; false = alarm cleared.
 bool trigger
@@ -19,7 +21,7 @@ builtin_interfaces/Time stamp
 # PackML Node (Equipment Module) that reported this alarm.
 string node_name
 
-# Severity of the condition (WARN..ABORT above). On a clear event, this is the
+# Severity identifier of the condition (constants above). On a clear event, this is the
 # severity the alarm had before it cleared (not reset to a neutral value).
 uint8 severity
 

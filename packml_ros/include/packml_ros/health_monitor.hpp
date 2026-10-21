@@ -16,7 +16,7 @@
 // HealthMonitor — pure C++ helper class embedded in the PackML manager.
 //
 // Monitors NodeHeartbeat messages from Equipment Modules and fires PackML
-// actions (Hold / Suspend / Abort) when new health events are detected.
+// actions (Hold / Suspend / Stop / Abort) when new health events are detected.
 //
 // Design principles:
 //   - Transition-based: only fires on NEW or ESCALATING events, not on repeats.
@@ -53,6 +53,28 @@
 #include <packml_msgs/msg/node_health.hpp>
 #include <packml_msgs/msg/node_heartbeat.hpp>
 
+namespace packml_ros {
+
+/// Semantic severity of a NodeHealth action. Wire values are stable identifiers:
+/// STOP was appended after ABORT, and HOLD takes priority over SUSPEND.
+constexpr int32_t health_action_severity(int32_t action)
+{
+  using NodeHealth = packml_msgs::msg::NodeHealth;
+  switch (action) {
+    case NodeHealth::NONE: return 0;
+    case NodeHealth::WARN: return 1;
+    case NodeHealth::SUSPEND: return 2;
+    case NodeHealth::HOLD: return 3;
+    case NodeHealth::STOP: return 4;
+    case NodeHealth::ABORT: return 5;
+    // Preserve existing handling of undefined wire values: the manager ignores
+    // unknown commands, while positive actionable values still close the gate.
+    default: return action;
+  }
+}
+
+}  // namespace packml_ros
+
 /// Alarm event fired by HealthMonitor for every health-state change on a PackML Node
 /// (Equipment Module).  All transitions — including WARN and clears — produce an AlarmEvent.
 /// Flat and self-contained (mirrors Alarm.msg) — no field is reread from NodeHealth.
@@ -60,7 +82,7 @@ struct AlarmEvent
 {
   bool trigger{true};              ///< true = alarm raised/updated, false = cleared
   std::string node_name;
-  int32_t severity{0};             ///< WARN..ABORT (NodeHealth::action levels); on clear, the
+  int32_t severity{0};             ///< NodeHealth::action identifier (not a rank); on clear, the
                                     ///< severity the alarm had before it cleared.
   int32_t error_code{0};           ///< user-defined condition id; 0 = unspecified, not a sentinel.
   bool is_timeout{false};          ///< true for a manager-synthesized heartbeat-timeout alarm,
@@ -86,7 +108,7 @@ public:
   ///   RESTART       — sequence collapsed to ~1 after a high value; re-baselined.
   enum class HeartbeatResult { ACCEPTED, DROPPED_STALE, RESTART };
 
-  /// @param fire_action   Called with NodeHealth::HOLD / SUSPEND / ABORT when a
+  /// @param fire_action   Called with NodeHealth::HOLD / SUSPEND / STOP / ABORT when a
   ///   new health event fires (new, escalating, or timeout). WARN events are
   ///   observed but do NOT invoke this callback.
   /// @param check_interval_ms  Period of the internal timeout-check thread.
@@ -345,7 +367,7 @@ public:
   /// Blocking conditions:
   ///   - Node never seen (UNKNOWN / no heartbeat yet)     → always blocks
   ///   - Node timed out                                   → always blocks
-  ///   - Node last_action > WARN (HOLD / SUSPEND / ABORT) → blocks unless manual_mode
+  ///   - Node actionable error (HOLD / SUSPEND / STOP / ABORT) → blocks unless manual_mode
   ///
   /// @param manual_mode_active  If true, ERROR/DEGRADED states are bypassed.
   ///   TIMEOUT is non-bypassable — always blocks regardless of mode.
@@ -483,10 +505,10 @@ private:
   /// Transition rules (in order of evaluation):
   ///   1. CLEARED  : action==NONE OR status==HEALTHY → reset, no fire
   ///   2. SAME     : same action already active      → suppress
-  ///   3. DE-ESCALATION : new_action < last_action   → update, suppress
+  ///   3. DE-ESCALATION : lower semantic severity   → update, suppress
   ///   4. WARN     : new_action == WARN              → log only, update, no fire
-  ///   5. NEW / ESCALATION (HOLD/SUSPEND/ABORT)      → fire
-  /// Returns the action to fire (HOLD/SUSPEND/ABORT), or NodeHealth::NONE for
+  ///   5. NEW / ESCALATION (HOLD/SUSPEND/STOP/ABORT)      → fire
+  /// Returns the action to fire (HOLD/SUSPEND/STOP/ABORT), or NodeHealth::NONE for
   /// "no fire".  Updates tracked state.  Must be called with nodes_mutex_ held; the
   /// caller invokes fire_action_ after releasing the lock.
   int32_t process_action_transition(
@@ -510,7 +532,10 @@ private:
     // 3. De-escalation while still in error (e.g., ABORT → HOLD after partial recovery).
     //    Update tracked action so a subsequent re-escalation can be detected,
     //    but do NOT fire again.
-    if (new_action < node.last_action && node.last_action != NodeHealth::NONE) {
+    if (packml_ros::health_action_severity(new_action) <
+      packml_ros::health_action_severity(node.last_action) &&
+      node.last_action != NodeHealth::NONE)
+    {
       node.last_action = new_action;
       node.last_status = new_status;
       return NodeHealth::NONE;
@@ -523,7 +548,7 @@ private:
       return NodeHealth::NONE;
     }
 
-    // 5. New event or escalation (HOLD, SUSPEND, ABORT) — fire.
+    // 5. New event or escalation (HOLD, SUSPEND, STOP, ABORT) — fire.
     node.last_action = new_action;
     node.last_status = new_status;
     return new_action;
@@ -582,7 +607,10 @@ private:
     if (const char * reason = liveness_block_reason(node, now)) {
       return reason;
     }
-    if (node.is_required && !manual_mode_active && node.last_action > NodeHealth::WARN) {
+    if (node.is_required && !manual_mode_active &&
+      packml_ros::health_action_severity(node.last_action) >
+      packml_ros::health_action_severity(NodeHealth::WARN))
+    {
       return "unhealthy";   // Actionable error — bypassed only in manual mode.
     }
     return nullptr;

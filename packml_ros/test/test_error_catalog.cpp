@@ -137,6 +137,7 @@ TEST(ErrorCatalogAction, StringToActionMapping)
   EXPECT_EQ(packml_ros::action_from_string("HOLD"), NodeHealth::HOLD);
   EXPECT_EQ(packml_ros::action_from_string("SUSPEND"), NodeHealth::SUSPEND);
   EXPECT_EQ(packml_ros::action_from_string("ABORT"), NodeHealth::ABORT);
+  EXPECT_EQ(packml_ros::action_from_string("STOP"), NodeHealth::STOP);
   // Unknown → NONE
   EXPECT_EQ(packml_ros::action_from_string("BOGUS"), NodeHealth::NONE);
 }
@@ -156,6 +157,33 @@ TEST(MachineCatalog, LoadsGeneratedFile)
   ASSERT_EQ(result.catalog.languages().size(), 2u);
   EXPECT_EQ(result.catalog.languages()[0], "en");
   EXPECT_EQ(result.catalog.languages()[1], "nl");
+}
+
+TEST(MachineCatalog, StopActionLoadsForNodeAndReservedFaults)
+{
+  TempYaml yaml(R"(
+languages: [en]
+reserved:
+  controlled_stop: {global: 2, action: STOP, en: "Controlled stop requested"}
+nodes:
+  motor:
+    base: 1000
+    codes:
+      12:
+        global: 1012
+        name: SEVERE_FAULT
+        action: STOP
+        descriptions: {en: "Severe motor fault"}
+)");
+  const auto result = load_machine_catalog_from_yaml(yaml.path());
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_TRUE(result.warnings.empty());
+  const auto * reserved = result.catalog.find_global(2);
+  ASSERT_NE(reserved, nullptr);
+  EXPECT_EQ(reserved->entry.action, NodeHealth::STOP);
+  const auto * node = result.catalog.find("motor", 12);
+  ASSERT_NE(node, nullptr);
+  EXPECT_EQ(node->entry.action, NodeHealth::STOP);
 }
 
 TEST(MachineCatalog, FindByNodeAndLocalReturnsGlobal)

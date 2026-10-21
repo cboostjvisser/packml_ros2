@@ -17,7 +17,7 @@
 // These tests run a real SMNode_new (with Qt state machine) alongside real
 // Equipment Module nodes (ConfigurableEquipmentModule) and verify that:
 //   - The health gate blocks RESET until all required EMs are healthy.
-//   - Health events (HOLD/SUSPEND/ABORT) from EMs drive state machine transitions.
+//   - Health events (HOLD/SUSPEND/STOP/ABORT) from EMs drive state machine transitions.
 //   - The gate opens after all required EMs report HEALTHY.
 
 #include <gtest/gtest.h>
@@ -274,6 +274,36 @@ TEST_F(HealthIntegrationTest, EquipmentModuleHoldTriggersManagerHold)
     sm_state == packml_sm::State::HELD)
     << "Expected HOLDING or HELD after EM reports HOLD, got: "
     << static_cast<int>(sm_state);
+}
+
+// STOP must complete to STOPPED, retain the health gate, and still permit an
+// ABORT escalation even though ABORT's preserved wire value is lower than STOP's.
+TEST_F(HealthIntegrationTest, EquipmentModuleStopThenAbortUsesSemanticPriority)
+{
+  send_state_change(state_client_, packml_msgs::srv::StateChange::Request::STOP);
+  ASSERT_TRUE(wait_for_sm_state(packml_sm::State::STOPPED));
+  make_all_healthy();
+  send_state_change(state_client_, packml_msgs::srv::StateChange::Request::RESET);
+  ASSERT_TRUE(wait_for_sm_state(packml_sm::State::IDLE));
+  send_state_change(state_client_, packml_msgs::srv::StateChange::Request::START);
+  ASSERT_TRUE(wait_for_sm_state(packml_sm::State::EXECUTE));
+
+  NodeHealth fault;
+  fault.status = NodeHealth::ERROR;
+  fault.action = NodeHealth::STOP;
+  fault.error_code = 12;
+  em_a_->post_event(fault);
+  ASSERT_TRUE(wait_for_sm_state(packml_sm::State::STOPPED))
+    << "STOP health action did not finish the controlled stop";
+
+  auto reset = send_state_change(state_client_, packml_msgs::srv::StateChange::Request::RESET);
+  ASSERT_NE(reset, nullptr);
+  EXPECT_FALSE(reset->success) << "The active STOP fault must block RESET";
+
+  fault.action = NodeHealth::ABORT;
+  em_a_->post_event(fault);
+  ASSERT_TRUE(wait_for_sm_state(packml_sm::State::ABORTED))
+    << "STOP -> ABORT must escalate despite the lower ABORT wire value";
 }
 
 // An EM reporting ABORT while the machine is EXECUTE drives the machine to abort.
